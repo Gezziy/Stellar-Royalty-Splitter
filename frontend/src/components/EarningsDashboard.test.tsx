@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { vi, type Mock } from "vitest";
 import "@testing-library/jest-dom";
 import { EarningsDashboard } from "./EarningsDashboard";
@@ -153,6 +153,9 @@ describe("EarningsDashboard Component", () => {
     expect(screen.getByText("You")).toBeInTheDocument(); // Badge for connected wallet
     expect(screen.getByText("60.00%")).toBeInTheDocument();
     expect(screen.getByText("40.00%")).toBeInTheDocument();
+
+    // Verify Advanced Analytics Dashboard is rendered
+    expect(screen.getByTestId("advanced-analytics-dashboard")).toBeInTheDocument();
   });
 
   it("filters collaborators by search query", async () => {
@@ -318,7 +321,7 @@ describe("EarningsDashboard Component", () => {
       const selector = await screen.findByTestId("contract-selector");
       expect(selector).toBeInTheDocument();
 
-      const options = screen.getAllByRole("option");
+      const options = within(selector).getAllByRole("option");
       // Two contracts + "All Contracts" aggregate option
       expect(options).toHaveLength(3);
       expect(

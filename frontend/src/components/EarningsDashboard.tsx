@@ -16,6 +16,7 @@ import {
   downloadDashboardJSON,
   exportElementToPDF,
 } from "../utils/dashboardExport";
+import { AdvancedAnalyticsDashboard } from "./AdvancedAnalyticsDashboard";
 import "./EarningsDashboard.css";
 
 interface CollaboratorEarning {
@@ -494,6 +495,9 @@ export const EarningsDashboard: React.FC<EarningsDashboardProps> = ({
           <div className="kpi-subtext">Allocated payout recipients</div>
         </div>
       </section>
+
+      {/* Advanced Analytics Section */}
+      <AdvancedAnalyticsDashboard payouts={recentPayouts} contractId={activeContract} />
 
       {/* Collaborators Breakdown Section */}
       <section className="dashboard-section collaborators-section" aria-labelledby="collab-earnings-heading">
