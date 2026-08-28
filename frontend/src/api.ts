@@ -409,6 +409,7 @@ export const api = {
       keypair,
     ),
 
+<<<<<<< Updated upstream
   distributeSecondaryRoyalties: (
     body: {
       contractId: string;
@@ -418,6 +419,24 @@ export const api = {
     keypair: Keypair,
   ) =>
     signedPost<{
+=======
+  setSecondaryPoolLimit: (body: {
+    contractId: string;
+    walletAddress: string;
+    maxPoolSize: number;
+  }) =>
+    post<{ xdr: string; transactionId: number }>(
+      "/secondary-royalty/set-pool-limit",
+      body,
+    ),
+
+  distributeSecondaryRoyalties: (body: {
+    contractId: string;
+    walletAddress: string;
+    tokenId: string;
+  }) =>
+    post<{
+>>>>>>> Stashed changes
       xdr: string;
       transactionId: number;
       numberOfSales: number;

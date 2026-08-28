@@ -97,6 +97,12 @@ export const setRoyaltyRateSchema = z.object({
   royaltyRate: basisPoints,
 });
 
+export const setSecondaryPoolLimitSchema = z.object({
+  contractId: contractAddress,
+  walletAddress: stellarAddress,
+  maxPoolSize: z.number().int().positive(),
+});
+
 export const recordSecondarySaleSchema = z.object({
   contractId: contractAddress,
   walletAddress: stellarAddress,
