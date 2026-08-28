@@ -16,28 +16,18 @@ import {
   markSalesDistributed,
   countSecondarySales,
   addAuditLog,
-<<<<<<< Updated upstream
 } from "../database/index.js";
-=======
-} from "../database.js";
->>>>>>> Stashed changes
 import {
   validate,
   recordSecondarySaleSchema,
   setRoyaltyRateSchema,
-<<<<<<< Updated upstream
+  setSecondaryPoolLimitSchema,
   distributeSecondarySchema,
   validateContractIdMiddleware,
   parsePagination,
 } from "../validation.js";
 import { sendError } from "../error-response.js";
 import { broadcastToContract } from "../websocket.js";
-=======
-  setSecondaryPoolLimitSchema,
-  validateContractId,
-  parsePagination,
-} from "../validation.js";
->>>>>>> Stashed changes
 
 export const secondaryRoyaltyRouter = Router();
 

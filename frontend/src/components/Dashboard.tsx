@@ -9,7 +9,7 @@ import {
   EarningsChart,
   TopEarners,
   CollaboratorList,
-} from "./dashboard";
+} from "./dashboard/index";
 import type { DateRange } from "./dashboard";
 import {
   buildContractPerformanceSummary,

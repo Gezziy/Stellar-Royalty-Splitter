@@ -409,7 +409,20 @@ export const api = {
       keypair,
     ),
 
-<<<<<<< Updated upstream
+  setSecondaryPoolLimit: (
+    body: {
+      contractId: string;
+      walletAddress: string;
+      maxPoolSize: number;
+    },
+    keypair: Keypair,
+  ) =>
+    signedPost<{ xdr: string; transactionId: number }>(
+      "/secondary-royalty/set-pool-limit",
+      body,
+      keypair,
+    ),
+
   distributeSecondaryRoyalties: (
     body: {
       contractId: string;
@@ -419,33 +432,11 @@ export const api = {
     keypair: Keypair,
   ) =>
     signedPost<{
-=======
-  setSecondaryPoolLimit: (body: {
-    contractId: string;
-    walletAddress: string;
-    maxPoolSize: number;
-  }) =>
-    post<{ xdr: string; transactionId: number }>(
-      "/secondary-royalty/set-pool-limit",
-      body,
-    ),
-
-  distributeSecondaryRoyalties: (body: {
-    contractId: string;
-    walletAddress: string;
-    tokenId: string;
-  }) =>
-    post<{
->>>>>>> Stashed changes
       xdr: string;
       transactionId: number;
       numberOfSales: number;
       totalRoyalties: string;
     }>("/secondary-royalty/distribute", body, keypair),
-
-  getRoyaltyStats: (contractId: string) =>
-    get<RoyaltyStats>(`/secondary-royalty/stats/${contractId}`),
-
   getSecondarySales: (
     contractId: string,
     limit = 50,
@@ -642,8 +633,6 @@ export const api = {
   getVerification: (walletAddress: string) => get<any>(`/verification/${walletAddress}`),
   startVerification: (walletAddress: string, data?: any) => post<any>(`/verification/start`, { walletAddress, ...data }),
   advanceVerification: (walletAddress: string, step?: any) => post<any>(`/verification/advance`, { walletAddress, step }),
-
-  getHealth: () => get<any>("/v1/health"),
 
   getContractFees: (contractId: string) => get<any>(`/fees/${contractId}`),
 

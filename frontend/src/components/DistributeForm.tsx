@@ -68,11 +68,10 @@ export default function DistributeForm({
   walletAddress,
   onSuccess,
 }: Props) {
-  const { network } = useNetwork();
+  const { network, networkMismatch } = useNetwork();
   const { current: txEntry, beginTransaction, updatePhase, reset: resetTx } = useTransaction();
   const isInFlight = useIsTransactionInFlight();
 
-  const { network, networkMismatch } = useNetwork();
   const [tokenId, setTokenId] = useState("");
   const [amount, setAmount] = useState("");
   const [contractBalance, setContractBalance] = useState<string | null>(null);
@@ -85,8 +84,6 @@ export default function DistributeForm({
 
   // Use TransactionContext's in-flight flag as the primary loading gate (#391)
   const loading = isInFlight;
-
-  const [loading, setLoading] = useState(false);
   const [successTxHash, setSuccessTxHash] = useState<string | null>(null);
   const [touched, setTouched] = useState<{ tokenId?: boolean; amount?: boolean }>({});
   // #653 — full transaction lifecycle state for granular wallet feedback
@@ -254,11 +251,6 @@ export default function DistributeForm({
 
       // #391: Phase 2 — signing
       updatePhase("signing", { transactionId: res.transactionId });
-
-      const hash = await signAndSubmitTransaction(res.xdr, network);
-
-      // #391: Phase 3 — confirming, with countdown
-      updatePhase("confirming", { txHash: hash });
 
       txLifecycle.setStage("submitting");
       const hash = await signAndSubmitTransaction(res.xdr, network);
@@ -482,8 +474,6 @@ export default function DistributeForm({
         <button
           type="submit"
           className="btn-primary btn-with-spinner"
-          disabled={loading || exceedsBalance || !amount}
-          aria-busy={loading}
           data-testid="distribute-submit"
           disabled={loading || txLifecycle.isActive || exceedsBalance || !amount || !tokenIdValid || networkMismatch}
           aria-busy={loading || txLifecycle.isActive}
@@ -495,7 +485,6 @@ export default function DistributeForm({
           type="button"
           className="btn-secondary"
           onClick={clearForm}
-          disabled={loading || (!tokenId && !amount && !draftPrompt)}
           data-testid="distribute-clear"
           disabled={loading || txLifecycle.isActive || (!tokenId && !amount && !draftPrompt)}
         >

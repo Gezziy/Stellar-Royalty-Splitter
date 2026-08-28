@@ -1,8 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use soroban_sdk::{
-    testutils::Address as _,
-    Address, Env, Vec as SorobanVec,
-};
+use soroban_sdk::{testutils::Address as _, Address, Env, Vec as SorobanVec};
 use stellar_royalty_splitter::{Recipient, RoyaltySplitterClient};
 
 fn make_env() -> Env {

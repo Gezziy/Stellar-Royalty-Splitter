@@ -1,18 +1,13 @@
-<<<<<<< Updated upstream
 use soroban_sdk::unwrap::UnwrapOptimized;
 pub mod auth;
 mod storage;
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, token,
-    xdr::ToXdr, Address, Bytes, BytesN, Env, Map, String, Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short, token, xdr::ToXdr, Address,
+    Bytes, BytesN, Env, Map, String, Vec,
 };
-=======
-#![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, Vec};
 
 pub const MAX_SECONDARY_POOL_SIZE: i128 = 1_000_000_000_000;
->>>>>>> Stashed changes
 
 #[contracttype]
 #[derive(Clone)]
@@ -155,7 +150,6 @@ pub enum StorageKey {
     Proposals,
     ProposalVotes,
     Collaborators,
-<<<<<<< Updated upstream
     ShareMap,
     DefaultRecipients,
     RoyaltyRateHistory,
@@ -167,6 +161,8 @@ pub enum StorageKey {
     MigrationMemo,
     ContributorJoinDate,
     ContributorActivityCount,
+    SecondaryRoyaltyPool,
+    MaxSecondaryPoolSize,
 }
 
 /// Maximum number of rate-change entries kept in history.
@@ -298,10 +294,7 @@ pub enum ContractError {
     ProposalAlreadyExecuted = 45,
     AlreadyVoted = 46,
     InvalidProposalDuration = 47,
-=======
-    SecondaryRoyaltyPool,
-    MaxSecondaryPoolSize,
->>>>>>> Stashed changes
+    SecondaryPoolLimitExceeded = 48,
 }
 
 #[contract]
@@ -359,8 +352,6 @@ impl RoyaltySplitter {
         if collaborators.is_empty() {
             return Err(ContractError::EmptyCollaborators);
         }
-<<<<<<< Updated upstream
-
         if collaborators.len() > MAX_COLLABORATORS {
             return Err(ContractError::TooManyRecipients);
         }
@@ -414,26 +405,20 @@ impl RoyaltySplitter {
             (symbol_short!("royalty"), symbol_short!("init")),
             (collaborators, shares),
         );
+        storage::instance_set(&env, &StorageKey::SecondaryRoyaltyPool, &0_i128);
+        storage::instance_set(
+            &env,
+            &StorageKey::MaxSecondaryPoolSize,
+            &MAX_SECONDARY_POOL_SIZE,
+        );
         Ok(())
-=======
-        let admin: Address = collaborators.get(0).unwrap();
-        env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage()
-            .instance()
-            .set(&DataKey::Collaborators, &collaborators);
-        env.storage()
-            .instance()
-            .set(&DataKey::RoyaltyRate, &royalty_rate);
-        env.storage()
-            .instance()
-            .set(&DataKey::SecondaryRoyaltyPool, &0_i128);
-        env.storage()
-            .instance()
-            .set(&DataKey::MaxSecondaryPoolSize, &MAX_SECONDARY_POOL_SIZE);
->>>>>>> Stashed changes
     }
 
-    pub fn initialize(env: Env, collaborators: Vec<Address>, shares: Vec<u32>) -> Result<(), ContractError> {
+    pub fn initialize(
+        env: Env,
+        collaborators: Vec<Address>,
+        shares: Vec<u32>,
+    ) -> Result<(), ContractError> {
         storage::extend_instance_ttl(&env);
 
         if env.storage().instance().has(&StorageKey::Admin) {
@@ -458,19 +443,37 @@ impl RoyaltySplitter {
         Ok(())
     }
 
-    pub fn commit_initialize(env: Env, collaborators_hash: BytesN<32>, shares_hash: BytesN<32>) -> Result<(), ContractError> {
+    pub fn commit_initialize(
+        env: Env,
+        collaborators_hash: BytesN<32>,
+        shares_hash: BytesN<32>,
+    ) -> Result<(), ContractError> {
         storage::extend_instance_ttl(&env);
 
         if env.storage().instance().has(&StorageKey::Admin) {
             return Err(ContractError::AlreadyInitialized);
         }
 
-        let nonce: u32 = env.storage().instance().get(&StorageKey::InitializeNonce).unwrap_or(0);
-        let nonce = nonce.checked_add(1).ok_or(ContractError::ArithmeticOverflow)?;
+        let nonce: u32 = env
+            .storage()
+            .instance()
+            .get(&StorageKey::InitializeNonce)
+            .unwrap_or(0);
+        let nonce = nonce
+            .checked_add(1)
+            .ok_or(ContractError::ArithmeticOverflow)?;
 
-        storage::instance_set(&env, &StorageKey::InitializeCollaboratorsHash, &collaborators_hash);
+        storage::instance_set(
+            &env,
+            &StorageKey::InitializeCollaboratorsHash,
+            &collaborators_hash,
+        );
         storage::instance_set(&env, &StorageKey::InitializeSharesHash, &shares_hash);
-        storage::instance_set(&env, &StorageKey::InitializeCommitLedger, &env.ledger().sequence());
+        storage::instance_set(
+            &env,
+            &StorageKey::InitializeCommitLedger,
+            &env.ledger().sequence(),
+        );
         storage::instance_set(&env, &StorageKey::InitializeNonce, &nonce);
 
         env.events().publish(
@@ -480,7 +483,11 @@ impl RoyaltySplitter {
         Ok(())
     }
 
-    pub fn reveal_initialize(env: Env, collaborators: Vec<Address>, shares: Vec<u32>) -> Result<(), ContractError> {
+    pub fn reveal_initialize(
+        env: Env,
+        collaborators: Vec<Address>,
+        shares: Vec<u32>,
+    ) -> Result<(), ContractError> {
         storage::extend_instance_ttl(&env);
 
         if env.storage().instance().has(&StorageKey::Admin) {
@@ -490,24 +497,27 @@ impl RoyaltySplitter {
         let committed_collaborators: BytesN<32> = match env
             .storage()
             .instance()
-            .get(&StorageKey::InitializeCollaboratorsHash) {
-                Some(val) => val,
-                None => return Err(ContractError::NoInitializationCommitment),
-            };
+            .get(&StorageKey::InitializeCollaboratorsHash)
+        {
+            Some(val) => val,
+            None => return Err(ContractError::NoInitializationCommitment),
+        };
         let committed_shares: BytesN<32> = match env
             .storage()
             .instance()
-            .get(&StorageKey::InitializeSharesHash) {
-                Some(val) => val,
-                None => return Err(ContractError::NoInitializationCommitment),
-            };
+            .get(&StorageKey::InitializeSharesHash)
+        {
+            Some(val) => val,
+            None => return Err(ContractError::NoInitializationCommitment),
+        };
         let commit_ledger: u32 = match env
             .storage()
             .instance()
-            .get(&StorageKey::InitializeCommitLedger) {
-                Some(val) => val,
-                None => return Err(ContractError::NoInitializationCommitment),
-            };
+            .get(&StorageKey::InitializeCommitLedger)
+        {
+            Some(val) => val,
+            None => return Err(ContractError::NoInitializationCommitment),
+        };
 
         if env.ledger().sequence() <= commit_ledger {
             return Err(ContractError::InitRevealTooEarly);
@@ -519,13 +529,21 @@ impl RoyaltySplitter {
             return Err(ContractError::InitCommitmentMismatch);
         }
 
-        let admin = collaborators.get(0).ok_or(ContractError::EmptyCollaborators)?;
+        let admin = collaborators
+            .get(0)
+            .ok_or(ContractError::EmptyCollaborators)?;
         auth::require_admin(&env, &admin, auth::msg::INITIALIZE_ADMIN);
         Self::initialize_validated(&env, collaborators, shares)?;
 
-        env.storage().instance().remove(&StorageKey::InitializeCollaboratorsHash);
-        env.storage().instance().remove(&StorageKey::InitializeSharesHash);
-        env.storage().instance().remove(&StorageKey::InitializeCommitLedger);
+        env.storage()
+            .instance()
+            .remove(&StorageKey::InitializeCollaboratorsHash);
+        env.storage()
+            .instance()
+            .remove(&StorageKey::InitializeSharesHash);
+        env.storage()
+            .instance()
+            .remove(&StorageKey::InitializeCommitLedger);
         Ok(())
     }
 
@@ -535,8 +553,7 @@ impl RoyaltySplitter {
 
         let to_version = String::from_str(&env, VERSION);
         let mut records: Vec<MigrationRecord> =
-            storage::persistent_get(&env, &StorageKey::AppliedMigrations)
-                .unwrap_or(Vec::new(&env));
+            storage::persistent_get(&env, &StorageKey::AppliedMigrations).unwrap_or(Vec::new(&env));
 
         for record in records.iter() {
             if record.from_version == from_version && record.to_version == to_version {
@@ -569,8 +586,7 @@ impl RoyaltySplitter {
 
     pub fn get_applied_migrations(env: Env) -> Vec<MigrationRecord> {
         storage::extend_instance_ttl(&env);
-        storage::persistent_get(&env, &StorageKey::AppliedMigrations)
-            .unwrap_or(Vec::new(&env))
+        storage::persistent_get(&env, &StorageKey::AppliedMigrations).unwrap_or(Vec::new(&env))
     }
 
     pub fn set_royalty_rate(env: Env, new_rate: u32) -> Result<(), ContractError> {
@@ -601,8 +617,11 @@ impl RoyaltySplitter {
             .expect("not initialized");
 
         let mut history: Vec<RoyaltyRateChange> =
-            storage::persistent_get::<Vec<RoyaltyRateChange>>(&env, &StorageKey::RoyaltyRateHistory)
-                .unwrap_or(Vec::new(&env));
+            storage::persistent_get::<Vec<RoyaltyRateChange>>(
+                &env,
+                &StorageKey::RoyaltyRateHistory,
+            )
+            .unwrap_or(Vec::new(&env));
 
         if history.len() >= RATE_HISTORY_CAP {
             let mut trimmed: Vec<RoyaltyRateChange> = Vec::new(&env);
@@ -640,10 +659,8 @@ impl RoyaltySplitter {
         Self::check_admin_auth(&env, auth::msg::PAUSE_ADMIN);
         storage::instance_set(&env, &StorageKey::Paused, &true);
         let admin = Self::require_admin_address(&env)?;
-        env.events().publish(
-            (symbol_short!("royalty"), symbol_short!("paused")),
-            admin,
-        );
+        env.events()
+            .publish((symbol_short!("royalty"), symbol_short!("paused")), admin);
         Ok(())
     }
 
@@ -657,7 +674,6 @@ impl RoyaltySplitter {
         let admin: Address = env
             .storage()
             .instance()
-<<<<<<< Updated upstream
             .get(&StorageKey::Admin)
             .expect("not initialized");
 
@@ -670,79 +686,6 @@ impl RoyaltySplitter {
             (symbol_short!("royalty"), symbol_short!("admin_xfr")),
             (previous_admin, new_admin),
         );
-=======
-            .get(&DataKey::Admin)
-            .expect("contract not initialized");
-        admin.require_auth();
-        env.storage()
-            .instance()
-            .set(&DataKey::RoyaltyRate, &new_rate);
-    }
-
-    pub fn record_secondary_royalty(env: Env, sale_price: i128) -> i128 {
-        if sale_price <= 0 {
-            panic!("sale price must be positive");
-        }
-
-        let rate: u32 = env
-            .storage()
-            .instance()
-            .get(&DataKey::RoyaltyRate)
-            .unwrap_or(0);
-        let royalty = sale_price
-            .checked_mul(rate as i128)
-            .expect("royalty calculation overflow")
-            / 10_000;
-        let pool = Self::get_secondary_royalty_pool(&env);
-        let new_pool = pool.checked_add(royalty).expect("secondary pool overflow");
-        let max_pool = Self::get_max_secondary_pool_size(&env);
-
-        if new_pool > max_pool {
-            panic!("secondary royalty pool limit exceeded");
-        }
-
-        env.storage()
-            .instance()
-            .set(&DataKey::SecondaryRoyaltyPool, &new_pool);
-        if new_pool > warning_threshold(max_pool) {
-            env.events()
-                .publish((symbol_short!("pool_warn"),), new_pool);
-        }
-        new_pool
-    }
-
-    pub fn set_max_secondary_pool_size(env: Env, new_limit: i128) {
-        if new_limit <= 0 {
-            panic!("pool limit must be positive");
-        }
-        let admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .expect("contract not initialized");
-        admin.require_auth();
-        let pool = Self::get_secondary_royalty_pool(&env);
-        if new_limit < pool {
-            panic!("pool limit cannot be below current pool");
-        }
-        env.storage()
-            .instance()
-            .set(&DataKey::MaxSecondaryPoolSize, &new_limit);
-    }
-
-    pub fn get_secondary_royalty_pool(env: Env) -> i128 {
-        env.storage()
-            .instance()
-            .get(&DataKey::SecondaryRoyaltyPool)
-            .unwrap_or(0)
-    }
-
-    pub fn get_max_secondary_pool_size(env: Env) -> i128 {
-        env.storage()
-            .instance()
-            .get(&DataKey::MaxSecondaryPoolSize)
-            .unwrap_or(MAX_SECONDARY_POOL_SIZE)
->>>>>>> Stashed changes
     }
 
     pub fn propose_admin_transfer(env: Env, new_admin: Address) {
@@ -763,7 +706,6 @@ impl RoyaltySplitter {
         let pending: Address = env
             .storage()
             .instance()
-<<<<<<< Updated upstream
             .get(&StorageKey::PendingAdmin)
             .expect("no pending admin transfer");
 
@@ -792,10 +734,8 @@ impl RoyaltySplitter {
         Self::check_admin_auth(&env, auth::msg::UNPAUSE_ADMIN);
         storage::instance_set(&env, &StorageKey::Paused, &false);
         let admin = Self::require_admin_address(&env)?;
-        env.events().publish(
-            (symbol_short!("royalty"), symbol_short!("unpaused")),
-            admin,
-        );
+        env.events()
+            .publish((symbol_short!("royalty"), symbol_short!("unpaused")), admin);
         Ok(())
     }
 
@@ -857,30 +797,6 @@ impl RoyaltySplitter {
         match operation {
             OperationType::PrimaryDistribution => StorageKey::PausedPrimary,
             OperationType::SecondaryDistribution => StorageKey::PausedSecondary,
-=======
-            .get(&DataKey::Admin)
-            .expect("contract not initialized");
-        admin.require_auth();
-        let rate: u32 = env
-            .storage()
-            .instance()
-            .get(&DataKey::RoyaltyRate)
-            .unwrap_or(0);
-        let collaborators: Vec<Address> = env
-            .storage()
-            .instance()
-            .get(&DataKey::Collaborators)
-            .expect("no collaborators");
-        let n = collaborators.len() as i128;
-        if n == 0 {
-            return;
-        }
-        let royalty_pool = total_amount * rate as i128 / 10_000;
-        let share = royalty_pool / n;
-        for collaborator in collaborators.iter() {
-            env.events()
-                .publish((symbol_short!("dist"),), (collaborator, share));
->>>>>>> Stashed changes
         }
     }
 
@@ -931,7 +847,10 @@ impl RoyaltySplitter {
         token::Client::new(&env, &token).balance(&env.current_contract_address())
     }
 
-    pub fn set_default_recipients(env: Env, recipients: Vec<Recipient>) -> Result<(), ContractError> {
+    pub fn set_default_recipients(
+        env: Env,
+        recipients: Vec<Recipient>,
+    ) -> Result<(), ContractError> {
         storage::extend_instance_ttl(&env);
 
         Self::check_admin_auth(&env, auth::msg::SET_DEFAULT_RECIPIENTS_ADMIN);
@@ -1015,7 +934,11 @@ impl RoyaltySplitter {
             .unwrap_or(Vec::new(&env))
     }
 
-    pub fn distribute_with_override(env: Env, token: Address, override_recipients: Vec<Recipient>) -> Result<(), ContractError> {
+    pub fn distribute_with_override(
+        env: Env,
+        token: Address,
+        override_recipients: Vec<Recipient>,
+    ) -> Result<(), ContractError> {
         storage::extend_instance_ttl(&env);
 
         Self::check_admin_auth(&env, auth::msg::DISTRIBUTE_OVERRIDE_ADMIN);
@@ -1216,7 +1139,12 @@ impl RoyaltySplitter {
                         .ok_or(ContractError::ArithmeticOverflow)?;
                     env.events().publish(
                         (symbol_short!("royalty"), symbol_short!("dist")),
-                        (addr.clone(), payout, token.clone(), symbol_short!("primary")),
+                        (
+                            addr.clone(),
+                            payout,
+                            token.clone(),
+                            symbol_short!("primary"),
+                        ),
                     );
                 }
                 _ => {
@@ -1331,7 +1259,11 @@ impl RoyaltySplitter {
 
         let mut total_shares: u32 = 0;
         for i in 0..recipients_to_use.len() {
-            total_shares = Self::checked_add_share_total(&env, total_shares, recipients_to_use.get(i).unwrap().share)?;
+            total_shares = Self::checked_add_share_total(
+                &env,
+                total_shares,
+                recipients_to_use.get(i).unwrap().share,
+            )?;
         }
         if total_shares != 10_000 {
             return Err(ContractError::InvalidShareTotal);
@@ -1411,7 +1343,12 @@ impl RoyaltySplitter {
         Ok(())
     }
 
-    pub fn record_secondary_royalty(env: Env, token: Address, from: Address, royalty_amount: i128) -> Result<(), ContractError> {
+    pub fn record_secondary_royalty(
+        env: Env,
+        token: Address,
+        from: Address,
+        royalty_amount: i128,
+    ) -> Result<(), ContractError> {
         storage::extend_instance_ttl(&env);
         auth::require_payer(&env, &from, auth::msg::RECORD_SECONDARY_PAYER);
 
@@ -1439,8 +1376,24 @@ impl RoyaltySplitter {
             .checked_add(royalty_amount)
             .ok_or(ContractError::ArithmeticOverflow)?;
 
+        let max_pool = env
+            .storage()
+            .instance()
+            .get(&StorageKey::MaxSecondaryPoolSize)
+            .unwrap_or(MAX_SECONDARY_POOL_SIZE);
+        if new_pool > max_pool {
+            return Err(ContractError::SecondaryPoolLimitExceeded);
+        }
+
         storage::instance_set(&env, &StorageKey::SecondaryPool, &new_pool);
         storage::instance_set(&env, &StorageKey::SecondaryToken, &token);
+
+        if new_pool > warning_threshold(max_pool) {
+            env.events().publish(
+                (symbol_short!("royalty"), symbol_short!("pool_warn")),
+                new_pool,
+            );
+        }
 
         let share_map: Map<Address, u32> =
             storage::persistent_get::<Map<Address, u32>>(&env, &StorageKey::ShareMap)
@@ -1570,7 +1523,6 @@ impl RoyaltySplitter {
     }
 
     pub fn get_royalty_rate(env: Env) -> u32 {
-<<<<<<< Updated upstream
         storage::extend_instance_ttl(&env);
         env.storage()
             .instance()
@@ -1619,7 +1571,11 @@ impl RoyaltySplitter {
             .ok_or(ContractError::CollaboratorNotFound)
     }
 
-    pub fn update_share(env: Env, collaborator: Address, new_share: u32) -> Result<(), ContractError> {
+    pub fn update_share(
+        env: Env,
+        collaborator: Address,
+        new_share: u32,
+    ) -> Result<(), ContractError> {
         storage::extend_instance_ttl(&env);
 
         Self::check_admin_auth(&env, auth::msg::UPDATE_SHARE_ADMIN);
@@ -1692,6 +1648,34 @@ impl RoyaltySplitter {
             .instance()
             .get(&StorageKey::SecondaryPool)
             .unwrap_or(0)
+    }
+
+    pub fn get_secondary_royalty_pool(env: Env) -> i128 {
+        Self::get_secondary_pool(env)
+    }
+
+    pub fn get_max_secondary_pool_size(env: Env) -> i128 {
+        storage::extend_instance_ttl(&env);
+        env.storage()
+            .instance()
+            .get(&StorageKey::MaxSecondaryPoolSize)
+            .unwrap_or(MAX_SECONDARY_POOL_SIZE)
+    }
+
+    pub fn set_max_secondary_pool_size(env: Env, new_limit: i128) -> Result<(), ContractError> {
+        storage::extend_instance_ttl(&env);
+        if new_limit <= 0 {
+            return Err(ContractError::AmountNotPositive);
+        }
+
+        Self::check_admin_auth(&env, "set_max_secondary_pool_size");
+        let current_pool = Self::get_secondary_pool(env.clone());
+        if new_limit < current_pool {
+            return Err(ContractError::SecondaryPoolLimitExceeded);
+        }
+
+        storage::instance_set(&env, &StorageKey::MaxSecondaryPoolSize, &new_limit);
+        Ok(())
     }
 
     pub fn get_last_distribution(env: Env) -> Option<u64> {
@@ -1814,9 +1798,11 @@ impl RoyaltySplitter {
             }
         }
 
-        let activity: Map<Address, u32> =
-            storage::persistent_get::<Map<Address, u32>>(env, &StorageKey::ContributorActivityCount)
-                .unwrap_or(Map::new(env));
+        let activity: Map<Address, u32> = storage::persistent_get::<Map<Address, u32>>(
+            env,
+            &StorageKey::ContributorActivityCount,
+        )
+        .unwrap_or(Map::new(env));
         let count = activity.get(addr.clone()).unwrap_or(0);
         let steps = (count / ACTIVITY_BONUS_STEP).min(ACTIVITY_BONUS_MAX_STEPS);
         bonus = bonus.saturating_add(steps.saturating_mul(ACTIVITY_BONUS_BPS_PER_STEP));
@@ -1902,7 +1888,11 @@ impl RoyaltySplitter {
         Ok(())
     }
 
-    fn execute_distribution(env: Env, token: Address, recipients: Vec<Recipient>) -> Result<(), ContractError> {
+    fn execute_distribution(
+        env: Env,
+        token: Address,
+        recipients: Vec<Recipient>,
+    ) -> Result<(), ContractError> {
         if Self::is_blocked(&env, OperationType::PrimaryDistribution) {
             return Err(ContractError::ContractPaused);
         }
@@ -2042,7 +2032,9 @@ impl RoyaltySplitter {
 
     pub fn get_pending_admin_rotation(env: Env) -> Option<AdminRotation> {
         storage::extend_instance_ttl(&env);
-        env.storage().instance().get(&StorageKey::PendingAdminRotation)
+        env.storage()
+            .instance()
+            .get(&StorageKey::PendingAdminRotation)
     }
 
     pub fn set_admin_rotation_timelock(env: Env, seconds: u64) {
@@ -2092,7 +2084,9 @@ impl RoyaltySplitter {
     pub fn clear_anomaly_threshold(env: Env) {
         storage::extend_instance_ttl(&env);
         Self::check_admin_auth(&env, auth::msg::SET_ANOMALY_THRESHOLD_ADMIN);
-        env.storage().instance().remove(&StorageKey::AnomalyThreshold);
+        env.storage()
+            .instance()
+            .remove(&StorageKey::AnomalyThreshold);
         env.events()
             .publish((symbol_short!("royalty"), symbol_short!("anom_clr")), ());
     }
@@ -2124,8 +2118,10 @@ impl RoyaltySplitter {
         storage::extend_instance_ttl(&env);
         Self::check_admin_auth(&env, auth::msg::TRIGGER_EMERGENCY_PAUSE_ADMIN);
         storage::instance_set(&env, &StorageKey::EmergencyPaused, &true);
-        env.events()
-            .publish((symbol_short!("royalty"), symbol_short!("emrg_set")), reason);
+        env.events().publish(
+            (symbol_short!("royalty"), symbol_short!("emrg_set")),
+            reason,
+        );
     }
 
     pub fn clear_emergency_pause(env: Env) {
@@ -2162,7 +2158,10 @@ impl RoyaltySplitter {
         auth::require_admin(env, &admin, auth::msg::CLEAR_EMERGENCY_PAUSE_ADMIN);
     }
 
-    fn validate_unique_addresses(env: &Env, recipients: &Vec<Recipient>) -> Result<(), ContractError> {
+    fn validate_unique_addresses(
+        env: &Env,
+        recipients: &Vec<Recipient>,
+    ) -> Result<(), ContractError> {
         let mut address_set: Vec<Address> = Vec::new(env);
 
         for i in 0..recipients.len() {
@@ -2177,7 +2176,10 @@ impl RoyaltySplitter {
         Ok(())
     }
 
-    fn validate_recipient_list(env: &Env, recipients: &Vec<Recipient>) -> Result<(), ContractError> {
+    fn validate_recipient_list(
+        env: &Env,
+        recipients: &Vec<Recipient>,
+    ) -> Result<(), ContractError> {
         if recipients.is_empty() {
             return Err(ContractError::EmptyRecipients);
         }
@@ -2205,7 +2207,10 @@ impl RoyaltySplitter {
         Ok(())
     }
 
-    fn validate_default_rcpt_bps(env: &Env, recipients: &Vec<Recipient>) -> Result<(), ContractError> {
+    fn validate_default_rcpt_bps(
+        env: &Env,
+        recipients: &Vec<Recipient>,
+    ) -> Result<(), ContractError> {
         for i in 0..recipients.len() {
             let recipient = recipients.get(i).unwrap();
             if recipient.share > 10_000 {
@@ -2216,8 +2221,7 @@ impl RoyaltySplitter {
     }
 
     fn check_admin_auth(env: &Env, message: &str) {
-        let admin_list: Option<Vec<Address>> =
-            env.storage().instance().get(&StorageKey::AdminList);
+        let admin_list: Option<Vec<Address>> = env.storage().instance().get(&StorageKey::AdminList);
         if let Some(admins) = admin_list {
             if !admins.is_empty() {
                 let threshold: u32 = env
@@ -2346,9 +2350,8 @@ impl RoyaltySplitter {
         let mut disputes: Map<u64, Dispute> =
             storage::persistent_get::<Map<u64, Dispute>>(&env, &StorageKey::Disputes)
                 .unwrap_or(Map::new(&env));
-        let next_id: u64 = storage::persistent_get::<u64>(&env, &StorageKey::DisputeCount)
-            .unwrap_or(0)
-            + 1;
+        let next_id: u64 =
+            storage::persistent_get::<u64>(&env, &StorageKey::DisputeCount).unwrap_or(0) + 1;
 
         let dispute = Dispute {
             transaction_id,
@@ -2477,7 +2480,9 @@ impl RoyaltySplitter {
         storage::extend_instance_ttl(&env);
         proposer.require_auth();
 
-        let share_map: Map<Address, u32> = storage::persistent_get::<Map<Address, u32>>(&env, &StorageKey::ShareMap).ok_or(ContractError::NoShareMap)?;
+        let share_map: Map<Address, u32> =
+            storage::persistent_get::<Map<Address, u32>>(&env, &StorageKey::ShareMap)
+                .ok_or(ContractError::NoShareMap)?;
         if !share_map.contains_key(proposer.clone()) {
             return Err(ContractError::CollaboratorNotFound);
         }
@@ -2492,9 +2497,8 @@ impl RoyaltySplitter {
         }
 
         let now = env.ledger().timestamp();
-        let id: u64 = storage::instance_get::<u64>(&env, &StorageKey::ProposalCount)
-            .unwrap_or(0)
-            + 1;
+        let id: u64 =
+            storage::instance_get::<u64>(&env, &StorageKey::ProposalCount).unwrap_or(0) + 1;
 
         let proposal = Proposal {
             id,
@@ -2534,7 +2538,9 @@ impl RoyaltySplitter {
         storage::extend_instance_ttl(&env);
         voter.require_auth();
 
-        let share_map: Map<Address, u32> = storage::persistent_get::<Map<Address, u32>>(&env, &StorageKey::ShareMap).ok_or(ContractError::NoShareMap)?;
+        let share_map: Map<Address, u32> =
+            storage::persistent_get::<Map<Address, u32>>(&env, &StorageKey::ShareMap)
+                .ok_or(ContractError::NoShareMap)?;
         let weight = share_map
             .get(voter.clone())
             .ok_or(ContractError::CollaboratorNotFound)?;
@@ -2553,12 +2559,10 @@ impl RoyaltySplitter {
             return Err(ContractError::ProposalVotingClosed);
         }
 
-        let mut votes: Map<u64, Map<Address, bool>> =
-            storage::persistent_get::<Map<u64, Map<Address, bool>>>(
-                &env,
-                &StorageKey::ProposalVotes,
-            )
-            .unwrap_or(Map::new(&env));
+        let mut votes: Map<u64, Map<Address, bool>> = storage::persistent_get::<
+            Map<u64, Map<Address, bool>>,
+        >(&env, &StorageKey::ProposalVotes)
+        .unwrap_or(Map::new(&env));
         let mut proposal_votes: Map<Address, bool> =
             votes.get(proposal_id).unwrap_or(Map::new(&env));
         if proposal_votes.contains_key(voter.clone()) {
@@ -2620,12 +2624,16 @@ impl RoyaltySplitter {
         }
 
         // Apply — mirrors set_royalty_rate's storage + history.
-        let old_rate: u32 = storage::instance_get::<u32>(&env, &StorageKey::RoyaltyRate).unwrap_or(0);
+        let old_rate: u32 =
+            storage::instance_get::<u32>(&env, &StorageKey::RoyaltyRate).unwrap_or(0);
         storage::instance_set(&env, &StorageKey::RoyaltyRate, &proposal.new_rate);
 
         let mut history: Vec<RoyaltyRateChange> =
-            storage::persistent_get::<Vec<RoyaltyRateChange>>(&env, &StorageKey::RoyaltyRateHistory)
-                .unwrap_or(Vec::new(&env));
+            storage::persistent_get::<Vec<RoyaltyRateChange>>(
+                &env,
+                &StorageKey::RoyaltyRateHistory,
+            )
+            .unwrap_or(Vec::new(&env));
         if history.len() >= RATE_HISTORY_CAP {
             let mut trimmed: Vec<RoyaltyRateChange> = Vec::new(&env);
             for i in 1..history.len() {
@@ -2677,8 +2685,9 @@ impl RoyaltySplitter {
     /// when the contract is still on the single-key admin.
     pub fn get_admin_config(env: Env) -> (Vec<Address>, u32) {
         storage::extend_instance_ttl(&env);
-        let signers: Vec<Address> = storage::instance_get::<Vec<Address>>(&env, &StorageKey::AdminList)
-            .unwrap_or(Vec::new(&env));
+        let signers: Vec<Address> =
+            storage::instance_get::<Vec<Address>>(&env, &StorageKey::AdminList)
+                .unwrap_or(Vec::new(&env));
         let threshold: u32 = if signers.is_empty() {
             1
         } else {
@@ -2688,40 +2697,16 @@ impl RoyaltySplitter {
     }
 }
 
-=======
-        env.storage()
-            .instance()
-            .get(&DataKey::RoyaltyRate)
-            .unwrap_or(0)
-    }
-
-    pub fn get_admin(env: Env) -> Address {
-        env.storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .expect("contract not initialized")
-    }
-
-    pub fn get_collaborators(env: Env) -> Vec<Address> {
-        env.storage()
-            .instance()
-            .get(&DataKey::Collaborators)
-            .expect("contract not initialized")
-    }
-}
-
 fn warning_threshold(max_pool: i128) -> i128 {
     (max_pool / 100) * 80 + ((max_pool % 100) * 80 / 100)
 }
 
->>>>>>> Stashed changes
 #[cfg(test)]
 mod contributor_incentive_tests {
     use super::*;
     use soroban_sdk::testutils::{Address as _, Ledger};
     use soroban_sdk::token::{Client as TokenClient, StellarAssetClient};
 
-<<<<<<< Updated upstream
     fn setup(env: &Env) -> (Address, Address, Address, RoyaltySplitterClient<'_>) {
         let contract_id = env.register_contract(None, RoyaltySplitter);
         let client = RoyaltySplitterClient::new(env, &contract_id);
@@ -2745,14 +2730,6 @@ mod contributor_incentive_tests {
             }
         }
         true
-=======
-    fn make_addresses(env: &Env, n: usize) -> soroban_sdk::Vec<Address> {
-        let mut v = vec![env];
-        for _ in 0..n {
-            v.push_back(Address::generate(env));
-        }
-        v
->>>>>>> Stashed changes
     }
 
     #[test]
@@ -2762,7 +2739,10 @@ mod contributor_incentive_tests {
         let (_, _, _, client) = setup(&env);
 
         assert!(!client.is_incentives_enabled());
-        assert!(recipients_eq(&client.calculate_incentive_shares(), &client.get_recipients()));
+        assert!(recipients_eq(
+            &client.calculate_incentive_shares(),
+            &client.get_recipients()
+        ));
     }
 
     #[test]
@@ -2784,54 +2764,6 @@ mod contributor_incentive_tests {
         assert_eq!(total, 10_000);
     }
 
-<<<<<<< Updated upstream
-=======
-    #[test]
-    fn test_secondary_pool_accepts_deposit_at_limit() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register_contract(None, RoyaltySplitter);
-        let client = RoyaltySplitterClient::new(&env, &contract_id);
-        let collaborators = make_addresses(&env, 2);
-        client.initialize(&collaborators, &10_000);
-
-        assert_eq!(
-            client.record_secondary_royalty(&MAX_SECONDARY_POOL_SIZE),
-            MAX_SECONDARY_POOL_SIZE
-        );
-        assert_eq!(client.get_secondary_royalty_pool(), MAX_SECONDARY_POOL_SIZE);
-    }
-
-    #[test]
-    fn test_secondary_pool_rejects_deposit_over_limit() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register_contract(None, RoyaltySplitter);
-        let client = RoyaltySplitterClient::new(&env, &contract_id);
-        let collaborators = make_addresses(&env, 2);
-        client.initialize(&collaborators, &10_000);
-        client.record_secondary_royalty(&MAX_SECONDARY_POOL_SIZE);
-
-        assert!(client.try_record_secondary_royalty(&1).is_err());
-        assert_eq!(client.get_secondary_royalty_pool(), MAX_SECONDARY_POOL_SIZE);
-    }
-
-    #[test]
-    fn test_admin_can_raise_secondary_pool_limit() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register_contract(None, RoyaltySplitter);
-        let client = RoyaltySplitterClient::new(&env, &contract_id);
-        let collaborators = make_addresses(&env, 2);
-        client.initialize(&collaborators, &10_000);
-
-        let raised_limit = MAX_SECONDARY_POOL_SIZE + 1;
-        client.set_max_secondary_pool_size(&raised_limit);
-        assert_eq!(client.get_max_secondary_pool_size(), raised_limit);
-        assert_eq!(client.record_secondary_royalty(&raised_limit), raised_limit);
-    }
-
->>>>>>> Stashed changes
     #[test]
     fn bonus_expires_after_early_adopter_window() {
         let env = Env::default();
@@ -2843,7 +2775,10 @@ mod contributor_incentive_tests {
         env.ledger()
             .with_mut(|l| l.timestamp = 1_000 + EARLY_ADOPTER_WINDOW_SECS + 1);
 
-        assert!(recipients_eq(&client.calculate_incentive_shares(), &client.get_recipients()));
+        assert!(recipients_eq(
+            &client.calculate_incentive_shares(),
+            &client.get_recipients()
+        ));
     }
 
     #[test]
@@ -2865,7 +2800,10 @@ mod contributor_incentive_tests {
         for _ in 0..ACTIVITY_BONUS_STEP {
             client.record_secondary_royalty(&token, &a, &1);
         }
-        assert_eq!(client.get_contributor_activity_count(&a), ACTIVITY_BONUS_STEP);
+        assert_eq!(
+            client.get_contributor_activity_count(&a),
+            ACTIVITY_BONUS_STEP
+        );
 
         let adjusted = client.calculate_incentive_shares();
         assert_eq!(adjusted.get(0).unwrap().share, 6_004);
@@ -3022,11 +2960,16 @@ impl MockPartialFailToken {
     }
 
     pub fn set_blocked(env: Env, addr: Address) {
-        env.storage().instance().set(&symbol_short!("blocked"), &addr);
+        env.storage()
+            .instance()
+            .set(&symbol_short!("blocked"), &addr);
     }
 
     pub fn balance(env: Env, _id: Address) -> i128 {
-        env.storage().instance().get(&symbol_short!("bal")).unwrap_or(0)
+        env.storage()
+            .instance()
+            .get(&symbol_short!("bal"))
+            .unwrap_or(0)
     }
 
     pub fn transfer(env: Env, _from: Address, to: Address, _amount: i128) {
@@ -3129,10 +3072,7 @@ mod emergency_pause_tests {
 
         assert!(client.is_emergency_paused());
         assert_eq!(client.get_distribute_count(), 0);
-        assert_eq!(
-            TokenClient::new(&env, &token).balance(&contract_id),
-            10_000
-        );
+        assert_eq!(TokenClient::new(&env, &token).balance(&contract_id), 10_000);
     }
 
     #[test]
