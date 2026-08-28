@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { useTheme } from "../context/ThemeContext";
+import { useUIStore } from "../store/uiStore";
 import { useNetwork } from "../context/NetworkContext";
 import { NotificationBadge } from "./NotificationBadge";
 import "./Navigation.css";
@@ -21,7 +21,8 @@ export const Navigation: React.FC<NavigationProps> = ({
 }) => {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [copied, setCopied] = useState(false);
-  const { isDark, toggleTheme } = useTheme();
+  const isDark = useUIStore((s) => s.isDark);
+  const toggleTheme = useUIStore((s) => s.toggleTheme);
   const { network, setNetwork } = useNetwork();
 
   // Close mobile menu on Escape and prevent body scroll while open

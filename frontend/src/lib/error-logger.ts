@@ -33,6 +33,7 @@ export function logErrorSafely(
 ): void {
   // Prepare safe error metadata (no stack traces or sensitive data in production)
   const safeMetadata: ErrorMetadata = {
+    ...metadata,
     level: metadata.level || "app",
     errorId: metadata.errorId,
     timestamp: metadata.timestamp || new Date().toISOString(),

@@ -575,8 +575,6 @@ export default function App() {
           />,
           "Onboarding Checklist",
         );
-      case "health":
-        return <HealthDashboard />;
       default:
         return null;
     }

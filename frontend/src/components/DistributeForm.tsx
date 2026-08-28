@@ -3,7 +3,7 @@ import { api } from "../api";
 import { getContractAddressError, isValidContractAddress } from "../lib/stellar-address";
 import { signAndSubmitTransaction } from "../stellar";
 import { useNetwork } from "../context/NetworkContext";
-import { useTransaction, useIsTransactionInFlight } from "../context/TransactionContext";
+import { useTransactionStore } from "../store/transactionsStore";
 import FormStatus from "./FormStatus";
 import TransactionStatusBadge from "./TransactionStatusBadge";
 import { useFormStatus } from "../hooks/useFormStatus";
@@ -68,9 +68,15 @@ export default function DistributeForm({
   walletAddress,
   onSuccess,
 }: Props) {
-  const { network } = useNetwork();
-  const { current: txEntry, beginTransaction, updatePhase, reset: resetTx } = useTransaction();
-  const isInFlight = useIsTransactionInFlight();
+  const txEntry = useTransactionStore((s) => s.current);
+  const beginTransaction = useTransactionStore((s) => s.beginTransaction);
+  const updatePhase = useTransactionStore((s) => s.updatePhase);
+  const resetTx = useTransactionStore((s) => s.reset);
+  const isInFlight =
+    txEntry !== null &&
+    (txEntry.phase === "building" ||
+      txEntry.phase === "signing" ||
+      txEntry.phase === "confirming");
 
   const { network, networkMismatch } = useNetwork();
   const [tokenId, setTokenId] = useState("");
@@ -84,9 +90,9 @@ export default function DistributeForm({
   const { status, setStatus, clearStatus } = useFormStatus();
 
   // Use TransactionContext's in-flight flag as the primary loading gate (#391)
-  const loading = isInFlight;
-
-  const [loading, setLoading] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const loading = isInFlight || isSubmitting;
+  const setLoading = setIsSubmitting;
   const [successTxHash, setSuccessTxHash] = useState<string | null>(null);
   const [touched, setTouched] = useState<{ tokenId?: boolean; amount?: boolean }>({});
   // #653 — full transaction lifecycle state for granular wallet feedback
@@ -254,16 +260,14 @@ export default function DistributeForm({
 
       // #391: Phase 2 — signing
       updatePhase("signing", { transactionId: res.transactionId });
+      txLifecycle.setStage("submitting");
 
       const hash = await signAndSubmitTransaction(res.xdr, network);
 
       // #391: Phase 3 — confirming, with countdown
       updatePhase("confirming", { txHash: hash });
-
-      txLifecycle.setStage("submitting");
-      const hash = await signAndSubmitTransaction(res.xdr, network);
-
       txLifecycle.setStage("confirming");
+
       await api.confirmTransaction(hash, {
         status: "confirmed",
         blockTime: new Date().toISOString(),
@@ -482,11 +486,9 @@ export default function DistributeForm({
         <button
           type="submit"
           className="btn-primary btn-with-spinner"
-          disabled={loading || exceedsBalance || !amount}
-          aria-busy={loading}
-          data-testid="distribute-submit"
           disabled={loading || txLifecycle.isActive || exceedsBalance || !amount || !tokenIdValid || networkMismatch}
           aria-busy={loading || txLifecycle.isActive}
+          data-testid="distribute-submit"
         >
           {(loading || txLifecycle.isActive) && <span className="btn-spinner" aria-hidden="true" />}
           {loading || txLifecycle.isActive ? "Submitting…" : "Distribute funds"}
@@ -495,9 +497,8 @@ export default function DistributeForm({
           type="button"
           className="btn-secondary"
           onClick={clearForm}
-          disabled={loading || (!tokenId && !amount && !draftPrompt)}
-          data-testid="distribute-clear"
           disabled={loading || txLifecycle.isActive || (!tokenId && !amount && !draftPrompt)}
+          data-testid="distribute-clear"
         >
           Clear
         </button>

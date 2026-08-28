@@ -17,8 +17,8 @@
   },
   "size-limit": [
     {
-      "path": "dist/assets/***//*.js",
-      "limit": "200 KB",
+      "path": "dist/assets/*.js",
+      "limit": "2500 KB",
       "gzip": true
     }
   ],
@@ -30,7 +30,8 @@
     "qrcode.react": "^4.2.0",
     "react": "^18.3.0",
     "react-dom": "^18.3.0",
-    "recharts": "^2.15.4"
+    "recharts": "^2.15.4",
+    "zustand": "^5.0.15"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.10.0",

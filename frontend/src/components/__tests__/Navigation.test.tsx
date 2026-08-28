@@ -99,7 +99,7 @@ describe("Navigation — mobile menu", () => {
 
   test("active page has aria-current=page", () => {
     setup();
-    const dashboardBtn = screen.getByRole("button", { name: /Dashboard/i });
+    const dashboardBtn = screen.getByRole("button", { name: /^📊 Dashboard$/i });
     expect(dashboardBtn).toHaveAttribute("aria-current", "page");
   });
 
