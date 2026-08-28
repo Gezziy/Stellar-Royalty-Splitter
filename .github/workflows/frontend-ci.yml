@@ -264,7 +264,22 @@ jobs:
           CI: true
 
       - name: Check bundle size
-        run: npm run size
+        run: |
+          npm run build
+          npx --yes source-map-explorer dist/assets/*.js --gzip || true
+          SIZE=$(gzip -c dist/assets/*.js | wc -c)
+          # Target is < 300 KB gzipped; fail above 330 KB (300 KB + 10% headroom)
+          MAX=$((300 * 1024 * 110 / 100))
+          if [ "$SIZE" -gt "$MAX" ]; then
+            echo "Bundle size $((SIZE / 1024)) kB exceeds $((MAX / 1024)) kB budget"
+            exit 1
+          fi
+          CHUNKS=$(find dist/assets -name '*.js' | wc -l)
+          if [ "$CHUNKS" -lt 2 ]; then
+            echo "Route-level code splitting not detected"
+            exit 1
+          fi
+          echo "Bundle size $((SIZE / 1024)) kB gzipped within budget"
 
       - name: Upload performance report
         if: always()
