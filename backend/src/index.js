@@ -63,6 +63,7 @@ import { transactionFinalityRouter } from "./routes/transaction-finality.js";
 import { startFinalityCleanupScheduler } from "./jobs/finality-cleanup-job.js";
 import { startPaymentScheduleJob } from "./jobs/payment-schedule-job.js";
 import { setupGraphQL } from "./graphql.js";
+import { requestComplexityMiddleware } from "./request-complexity.js";
 
 // Initialize database on startup
 initializeDatabase();
@@ -259,6 +260,10 @@ app.use((req, res, next) => {
   }
   next();
 });
+
+// Enforce request complexity limits before expensive downstream processing (#892)
+app.use(requestComplexityMiddleware());
+
 
 // Per-request timeout middleware
 const REQUEST_TIMEOUT_MS = parseInt(process.env.REQUEST_TIMEOUT_MS ?? "30000");
