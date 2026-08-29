@@ -18,6 +18,8 @@ import {
 } from "../utils/dashboardExport";
 import "./EarningsDashboard.css";
 
+
+
 interface CollaboratorEarning {
   address: string;
   basisPoints: number;
@@ -360,7 +362,7 @@ export const EarningsDashboard: React.FC<EarningsDashboardProps> = ({
     setExportError(null);
     setExportMenuOpen(false);
     try {
-      const csv = buildDashboardCSV(collaborators, [
+      const csv = buildDashboardCSV(filteredCollaborators, [
         { key: "address", label: "Collaborator Address" },
         { key: "basisPoints", label: "Basis Points" },
         { key: "totalEarned", label: "Total Earned" },
@@ -382,8 +384,8 @@ export const EarningsDashboard: React.FC<EarningsDashboardProps> = ({
         totalDistributed,
         primaryTotal,
         secondaryTotal,
-        collaborators,
-        recentPayouts,
+        collaborators: filteredCollaborators,
+        recentPayouts: filteredPayouts,
       });
       downloadDashboardJSON(json, buildExportFilename(exportMetadata, "json"));
     } catch (err) {
@@ -391,6 +393,8 @@ export const EarningsDashboard: React.FC<EarningsDashboardProps> = ({
       setExportError("Failed to generate JSON export. Please try again.");
     }
   };
+
+
 
   return (
     <div className="earnings-dashboard" data-testid="earnings-dashboard" ref={dashboardRef}>
