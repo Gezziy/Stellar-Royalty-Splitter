@@ -111,6 +111,37 @@ pub struct Proposal {
     pub rejected: bool,
 }
 
+/// Sensitive administrative operations subject to collaborative threshold approval (#894).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SensitiveOperation {
+    Pause,
+    Unpause,
+    PauseOperation(OperationType),
+    UnpauseOperation(OperationType),
+    TransferAdmin(Address),
+    SetRoyaltyRate(u32),
+    SetAnomalyThreshold(i128),
+    SetIncentivesEnabled(bool),
+    UpdateWasm(BytesN<32>),
+    SetApprovedTokens(Vec<Address>),
+}
+
+/// A proposal for executing a sensitive contract operation with multi-admin threshold approval (#894).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OperationProposal {
+    pub id: u64,
+    pub operation: SensitiveOperation,
+    pub proposer: Address,
+    pub created_at: u64,
+    pub deadline: u64,
+    pub threshold: u32,
+    pub approvals_count: u32,
+    pub executed: bool,
+    pub executed_at: u64,
+}
+
 /// Typed storage keys.
 ///
 /// Instance storage keys: small, frequently accessed values (Admin, Paused, etc.).
@@ -141,12 +172,15 @@ pub enum StorageKey {
     EmergencyPaused,
     AnomalyThreshold,
     ProposalCount,
+    OperationProposalCount,
     // Persistent storage
     ApprovedTokens,
     Disputes,
     DisputeCount,
     Proposals,
     ProposalVotes,
+    OperationProposals,
+    OperationProposalApprovals,
     Collaborators,
     ShareMap,
     DefaultRecipients,
@@ -160,6 +194,7 @@ pub enum StorageKey {
     ContributorJoinDate,
     ContributorActivityCount,
 }
+
 
 /// Maximum number of rate-change entries kept in history.
 /// Older entries are dropped when the cap is reached.
@@ -290,7 +325,11 @@ pub enum ContractError {
     ProposalAlreadyExecuted = 45,
     AlreadyVoted = 46,
     InvalidProposalDuration = 47,
+    AlreadyApproved = 48,
+    ProposalExpired = 49,
+    UnauthorizedSigner = 50,
 }
+
 
 #[contract]
 pub struct RoyaltySplitter;
@@ -2557,7 +2596,331 @@ impl RoyaltySplitter {
         };
         (signers, threshold)
     }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // #894 — Collaborative signing & threshold approval for sensitive operations
+    // ─────────────────────────────────────────────────────────────────────
+
+    fn is_authorized_admin(env: &Env, signer: &Address) -> bool {
+        let admin_list: Option<Vec<Address>> =
+            env.storage().instance().get(&StorageKey::AdminList);
+        if let Some(admins) = admin_list {
+            if !admins.is_empty() {
+                for i in 0..admins.len() {
+                    if admins.get(i).unwrap() == *signer {
+                        return true;
+                    }
+                }
+                return false;
+            }
+        }
+        if let Some(admin) = env.storage().instance().get::<StorageKey, Address>(&StorageKey::Admin) {
+            return admin == *signer;
+        }
+        false
+    }
+
+    fn get_current_threshold(env: &Env) -> u32 {
+        let admin_list: Option<Vec<Address>> =
+            env.storage().instance().get(&StorageKey::AdminList);
+        if let Some(admins) = admin_list {
+            if !admins.is_empty() {
+                return env
+                    .storage()
+                    .instance()
+                    .get(&StorageKey::AdminThreshold)
+                    .unwrap_or(1);
+            }
+        }
+        1
+    }
+
+    fn execute_sensitive_operation(env: &Env, operation: &SensitiveOperation) -> Result<(), ContractError> {
+        match operation {
+            SensitiveOperation::Pause => {
+                storage::instance_set(env, &StorageKey::Paused, &true);
+                env.events().publish((symbol_short!("royalty"), symbol_short!("paused")), ());
+            }
+            SensitiveOperation::Unpause => {
+                storage::instance_set(env, &StorageKey::Paused, &false);
+                env.events().publish((symbol_short!("royalty"), symbol_short!("unpaused")), ());
+            }
+            SensitiveOperation::PauseOperation(op) => {
+                match op {
+                    OperationType::PrimaryDistribution => {
+                        storage::instance_set(env, &StorageKey::PausedPrimary, &true);
+                    }
+                    OperationType::SecondaryDistribution => {
+                        storage::instance_set(env, &StorageKey::PausedSecondary, &true);
+                    }
+                }
+                env.events().publish((symbol_short!("royalty"), symbol_short!("op_paused")), *op as u32);
+            }
+            SensitiveOperation::UnpauseOperation(op) => {
+                match op {
+                    OperationType::PrimaryDistribution => {
+                        storage::instance_set(env, &StorageKey::PausedPrimary, &false);
+                    }
+                    OperationType::SecondaryDistribution => {
+                        storage::instance_set(env, &StorageKey::PausedSecondary, &false);
+                    }
+                }
+                env.events().publish((symbol_short!("royalty"), symbol_short!("op_unpaus")), *op as u32);
+            }
+            SensitiveOperation::TransferAdmin(new_admin) => {
+                storage::instance_set(env, &StorageKey::Admin, new_admin);
+                env.events().publish((symbol_short!("royalty"), symbol_short!("adm_trf")), new_admin.clone());
+            }
+            SensitiveOperation::SetRoyaltyRate(new_rate) => {
+                if *new_rate > 10_000 {
+                    return Err(ContractError::RoyaltyRateTooHigh);
+                }
+                let old_rate: u32 = storage::instance_get::<u32>(env, &StorageKey::RoyaltyRate).unwrap_or(0);
+                storage::instance_set(env, &StorageKey::RoyaltyRate, new_rate);
+                let now = env.ledger().timestamp();
+                let caller = env.storage().instance().get::<StorageKey, Address>(&StorageKey::Admin)
+                    .unwrap_or(env.current_contract_address());
+                let entry = RoyaltyRateChange {
+                    old_rate,
+                    new_rate: *new_rate,
+                    timestamp: now,
+                    caller,
+                };
+                let mut history: Vec<RoyaltyRateChange> = storage::persistent_get(env, &StorageKey::RoyaltyRateHistory)
+                    .unwrap_or(Vec::new(env));
+                if history.len() >= RATE_HISTORY_CAP {
+                    history.pop_front();
+                }
+                history.push_back(entry);
+                storage::persistent_set(env, &StorageKey::RoyaltyRateHistory, &history);
+                env.events().publish((symbol_short!("royalty"), symbol_short!("rate_set")), (old_rate, *new_rate));
+            }
+            SensitiveOperation::SetAnomalyThreshold(new_threshold) => {
+                if *new_threshold < 0 {
+                    return Err(ContractError::InvalidAnomalyThreshold);
+                }
+                storage::instance_set(env, &StorageKey::AnomalyThreshold, new_threshold);
+                env.events().publish((symbol_short!("royalty"), symbol_short!("anom_set")), *new_threshold);
+            }
+            SensitiveOperation::SetIncentivesEnabled(enabled) => {
+                storage::instance_set(env, &StorageKey::IncentivesEnabled, enabled);
+                env.events().publish((symbol_short!("royalty"), symbol_short!("incn_set")), *enabled);
+            }
+            SensitiveOperation::UpdateWasm(wasm_hash) => {
+                env.deployer().update_current_contract_wasm(wasm_hash.clone());
+                env.events().publish((symbol_short!("royalty"), symbol_short!("upgraded")), wasm_hash.clone());
+            }
+            SensitiveOperation::SetApprovedTokens(tokens) => {
+                if tokens.len() > MAX_APPROVED_TOKENS {
+                    return Err(ContractError::InputTooLarge);
+                }
+                let mut seen: Vec<Address> = Vec::new(env);
+                for i in 0..tokens.len() {
+                    let tok = tokens.get(i).unwrap();
+                    for j in 0..seen.len() {
+                        if seen.get(j).unwrap() == tok {
+                            return Err(ContractError::DuplicateRecipient);
+                        }
+                    }
+                    seen.push_back(tok);
+                }
+                storage::persistent_set(env, &StorageKey::ApprovedTokens, tokens);
+                env.events().publish((symbol_short!("royalty"), symbol_short!("toks_set")), tokens.len());
+            }
+        }
+        Ok(())
+    }
+
+    /// Proposes a sensitive operation for collaborative threshold approval (#894).
+    pub fn propose_operation(
+        env: Env,
+        proposer: Address,
+        operation: SensitiveOperation,
+        duration: u64,
+    ) -> Result<u64, ContractError> {
+        storage::extend_instance_ttl(&env);
+        auth::require_admin(&env, &proposer, auth::msg::PROPOSE_OPERATION_ADMIN);
+
+        if !Self::is_authorized_admin(&env, &proposer) {
+            return Err(ContractError::UnauthorizedSigner);
+        }
+
+        if duration < MIN_PROPOSAL_DURATION || duration > MAX_PROPOSAL_DURATION {
+            return Err(ContractError::InvalidProposalDuration);
+        }
+
+        // Validate operation parameters early
+        match &operation {
+            SensitiveOperation::SetRoyaltyRate(rate) => {
+                if *rate > 10_000 {
+                    return Err(ContractError::RoyaltyRateTooHigh);
+                }
+            }
+            SensitiveOperation::SetAnomalyThreshold(threshold) => {
+                if *threshold < 0 {
+                    return Err(ContractError::InvalidAnomalyThreshold);
+                }
+            }
+            SensitiveOperation::SetApprovedTokens(tokens) => {
+                if tokens.len() > MAX_APPROVED_TOKENS {
+                    return Err(ContractError::InputTooLarge);
+                }
+                let mut seen: Vec<Address> = Vec::new(&env);
+                for i in 0..tokens.len() {
+                    let tok = tokens.get(i).unwrap();
+                    for j in 0..seen.len() {
+                        if seen.get(j).unwrap() == tok {
+                            return Err(ContractError::DuplicateRecipient);
+                        }
+                    }
+                    seen.push_back(tok);
+                }
+            }
+            _ => {}
+        }
+
+        let now = env.ledger().timestamp();
+        let id: u64 = storage::instance_get::<u64>(&env, &StorageKey::OperationProposalCount)
+            .unwrap_or(0)
+            + 1;
+        let threshold = Self::get_current_threshold(&env);
+
+        let mut proposal = OperationProposal {
+            id,
+            operation: operation.clone(),
+            proposer: proposer.clone(),
+            created_at: now,
+            deadline: now.saturating_add(duration),
+            threshold,
+            approvals_count: 1,
+            executed: false,
+            executed_at: 0,
+        };
+
+        let mut approvals: Vec<Address> = Vec::new(&env);
+        approvals.push_back(proposer.clone());
+
+        // If threshold is 1 (e.g. single admin or 1-of-N), execute immediately
+        if threshold <= 1 {
+            Self::execute_sensitive_operation(&env, &operation)?;
+            proposal.executed = true;
+            proposal.executed_at = now;
+            env.events().publish(
+                (symbol_short!("op_prop"), symbol_short!("executed")),
+                (id, now),
+            );
+        }
+
+        let mut proposals: Map<u64, OperationProposal> =
+            storage::persistent_get::<Map<u64, OperationProposal>>(&env, &StorageKey::OperationProposals)
+                .unwrap_or(Map::new(&env));
+        proposals.set(id, proposal);
+        storage::persistent_set(&env, &StorageKey::OperationProposals, &proposals);
+
+        let mut all_approvals: Map<u64, Vec<Address>> =
+            storage::persistent_get::<Map<u64, Vec<Address>>>(&env, &StorageKey::OperationProposalApprovals)
+                .unwrap_or(Map::new(&env));
+        all_approvals.set(id, approvals);
+        storage::persistent_set(&env, &StorageKey::OperationProposalApprovals, &all_approvals);
+
+        storage::instance_set(&env, &StorageKey::OperationProposalCount, &id);
+
+        env.events().publish(
+            (symbol_short!("op_prop"), symbol_short!("created")),
+            (id, threshold, now.saturating_add(duration)),
+        );
+
+        Ok(id)
+    }
+
+    /// Approves an open operation proposal (#894). Executes the operation once threshold is reached.
+    pub fn approve_operation(
+        env: Env,
+        approver: Address,
+        proposal_id: u64,
+    ) -> Result<bool, ContractError> {
+        storage::extend_instance_ttl(&env);
+        auth::require_admin(&env, &approver, auth::msg::APPROVE_OPERATION_ADMIN);
+
+        if !Self::is_authorized_admin(&env, &approver) {
+            return Err(ContractError::UnauthorizedSigner);
+        }
+
+        let mut proposals: Map<u64, OperationProposal> =
+            storage::persistent_get::<Map<u64, OperationProposal>>(&env, &StorageKey::OperationProposals)
+                .ok_or(ContractError::ProposalNotFound)?;
+        let mut proposal = proposals
+            .get(proposal_id)
+            .ok_or(ContractError::ProposalNotFound)?;
+
+        if proposal.executed {
+            return Err(ContractError::ProposalAlreadyExecuted);
+        }
+
+        let now = env.ledger().timestamp();
+        if now >= proposal.deadline {
+            return Err(ContractError::ProposalExpired);
+        }
+
+        let mut all_approvals: Map<u64, Vec<Address>> =
+            storage::persistent_get::<Map<u64, Vec<Address>>>(&env, &StorageKey::OperationProposalApprovals)
+                .unwrap_or(Map::new(&env));
+        let mut approvals = all_approvals
+            .get(proposal_id)
+            .unwrap_or(Vec::new(&env));
+
+        for i in 0..approvals.len() {
+            if approvals.get(i).unwrap() == approver {
+                return Err(ContractError::AlreadyApproved);
+            }
+        }
+
+        approvals.push_back(approver.clone());
+        proposal.approvals_count = proposal.approvals_count.saturating_add(1);
+        all_approvals.set(proposal_id, approvals);
+        storage::persistent_set(&env, &StorageKey::OperationProposalApprovals, &all_approvals);
+
+        let executed = if proposal.approvals_count >= proposal.threshold {
+            Self::execute_sensitive_operation(&env, &proposal.operation)?;
+            proposal.executed = true;
+            proposal.executed_at = now;
+            env.events().publish(
+                (symbol_short!("op_prop"), symbol_short!("executed")),
+                (proposal_id, now),
+            );
+            true
+        } else {
+            env.events().publish(
+                (symbol_short!("op_prop"), symbol_short!("approved")),
+                (proposal_id, proposal.approvals_count, proposal.threshold),
+            );
+            false
+        };
+
+        proposals.set(proposal_id, proposal);
+        storage::persistent_set(&env, &StorageKey::OperationProposals, &proposals);
+
+        Ok(executed)
+    }
+
+    /// Fetches an operation proposal by ID (#894).
+    pub fn get_operation_proposal(env: Env, proposal_id: u64) -> Result<OperationProposal, ContractError> {
+        storage::extend_instance_ttl(&env);
+        storage::persistent_get::<Map<u64, OperationProposal>>(&env, &StorageKey::OperationProposals)
+            .ok_or(ContractError::ProposalNotFound)?
+            .get(proposal_id)
+            .ok_or(ContractError::ProposalNotFound)
+    }
+
+    /// Returns all approvers for a given operation proposal (#894).
+    pub fn get_operation_proposal_approvals(env: Env, proposal_id: u64) -> Vec<Address> {
+        storage::extend_instance_ttl(&env);
+        storage::persistent_get::<Map<u64, Vec<Address>>>(&env, &StorageKey::OperationProposalApprovals)
+            .and_then(|m| m.get(proposal_id))
+            .unwrap_or(Vec::new(&env))
+    }
 }
+
 
 #[cfg(test)]
 mod contributor_incentive_tests {
@@ -3324,5 +3687,231 @@ mod multisig_admin_tests {
         client.pause();
         assert!(client.is_paused());
         client.unpause();
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// #894 — Collaborative signing & threshold approval for sensitive operations
+// ─────────────────────────────────────────────────────────────────────────
+#[cfg(test)]
+mod collaborative_operation_proposal_tests {
+    use super::*;
+    use soroban_sdk::testutils::{Address as _, Ledger};
+
+    fn setup(env: &Env, n_admins: usize, threshold: u32) -> (Address, Vec<Address>, RoyaltySplitterClient<'_>) {
+        let contract_id = env.register_contract(None, RoyaltySplitter);
+        let client = RoyaltySplitterClient::new(env, &contract_id);
+        let collab_a = Address::generate(env);
+        let collab_b = Address::generate(env);
+        client.initialize(
+            &Vec::from_array(env, [collab_a, collab_b]),
+            &Vec::from_array(env, [6_000u32, 4_000u32]),
+        );
+
+        let mut admins = Vec::new(env);
+        for _ in 0..n_admins {
+            admins.push_back(Address::generate(env));
+        }
+
+        if n_admins > 0 {
+            client.set_admins(&admins, &threshold);
+        }
+
+        let default_admin = client.get_admin();
+        (default_admin, admins, client)
+    }
+
+    #[test]
+    fn single_admin_executes_immediately_on_propose() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (admin, _, client) = setup(&env, 0, 1);
+
+        assert!(!client.is_paused());
+        let prop_id = client.propose_operation(&admin, &SensitiveOperation::Pause, &MIN_PROPOSAL_DURATION);
+        assert_eq!(prop_id, 1);
+        assert!(client.is_paused());
+
+        let proposal = client.get_operation_proposal(&prop_id);
+        assert_eq!(proposal.threshold, 1);
+        assert_eq!(proposal.approvals_count, 1);
+        assert!(proposal.executed);
+        assert_eq!(proposal.executed_at, env.ledger().timestamp());
+    }
+
+    #[test]
+    fn multi_admin_threshold_approval_and_execution() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_, admins, client) = setup(&env, 3, 2);
+        let admin1 = admins.get(0).unwrap();
+        let admin2 = admins.get(1).unwrap();
+        let admin3 = admins.get(2).unwrap();
+
+        let initial_rate = client.get_royalty_rate();
+        assert_ne!(initial_rate, 800);
+
+        // Admin 1 proposes rate change to 800 bps
+        let prop_id = client.propose_operation(
+            &admin1,
+            &SensitiveOperation::SetRoyaltyRate(800),
+            &MIN_PROPOSAL_DURATION,
+        );
+
+        let prop = client.get_operation_proposal(&prop_id);
+        assert_eq!(prop.threshold, 2);
+        assert_eq!(prop.approvals_count, 1);
+        assert!(!prop.executed);
+        assert_eq!(client.get_royalty_rate(), initial_rate);
+
+        let approvers = client.get_operation_proposal_approvals(&prop_id);
+        assert_eq!(approvers.len(), 1);
+        assert_eq!(approvers.get(0).unwrap(), admin1);
+
+        // Admin 2 approves -> reaches threshold (2/2) -> executes!
+        let executed = client.approve_operation(&admin2, &prop_id);
+        assert!(executed);
+
+        let prop_after = client.get_operation_proposal(&prop_id);
+        assert_eq!(prop_after.approvals_count, 2);
+        assert!(prop_after.executed);
+        assert_eq!(client.get_royalty_rate(), 800);
+
+        let final_approvers = client.get_operation_proposal_approvals(&prop_id);
+        assert_eq!(final_approvers.len(), 2);
+        assert_eq!(final_approvers.get(1).unwrap(), admin2);
+
+        // Admin 3 attempting to approve executed proposal is rejected
+        assert_eq!(
+            client.try_approve_operation(&admin3, &prop_id),
+            Err(Ok(ContractError::ProposalAlreadyExecuted))
+        );
+    }
+
+    #[test]
+    fn unauthorized_signer_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_, admins, client) = setup(&env, 3, 2);
+        let admin1 = admins.get(0).unwrap();
+        let stranger = Address::generate(&env);
+
+        assert_eq!(
+            client.try_propose_operation(&stranger, &SensitiveOperation::Pause, &MIN_PROPOSAL_DURATION),
+            Err(Ok(ContractError::UnauthorizedSigner))
+        );
+
+        let prop_id = client.propose_operation(
+            &admin1,
+            &SensitiveOperation::Pause,
+            &MIN_PROPOSAL_DURATION,
+        );
+
+        assert_eq!(
+            client.try_approve_operation(&stranger, &prop_id),
+            Err(Ok(ContractError::UnauthorizedSigner))
+        );
+    }
+
+    #[test]
+    fn duplicate_approval_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_, admins, client) = setup(&env, 3, 3);
+        let admin1 = admins.get(0).unwrap();
+
+        let prop_id = client.propose_operation(
+            &admin1,
+            &SensitiveOperation::Pause,
+            &MIN_PROPOSAL_DURATION,
+        );
+
+        // Admin 1 was auto-recorded on propose, trying to approve again is rejected
+        assert_eq!(
+            client.try_approve_operation(&admin1, &prop_id),
+            Err(Ok(ContractError::AlreadyApproved))
+        );
+    }
+
+    #[test]
+    fn proposal_expiration_enforced() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_, admins, client) = setup(&env, 3, 2);
+        let admin1 = admins.get(0).unwrap();
+        let admin2 = admins.get(1).unwrap();
+
+        env.ledger().with_mut(|l| l.timestamp = 10_000);
+        let prop_id = client.propose_operation(
+            &admin1,
+            &SensitiveOperation::Pause,
+            &MIN_PROPOSAL_DURATION, // 3600s
+        );
+
+        // Advance ledger timestamp beyond deadline
+        env.ledger()
+            .with_mut(|l| l.timestamp = 10_000 + MIN_PROPOSAL_DURATION + 10);
+
+        assert_eq!(
+            client.try_approve_operation(&admin2, &prop_id),
+            Err(Ok(ContractError::ProposalExpired))
+        );
+        assert!(!client.is_paused());
+    }
+
+    #[test]
+    fn proposal_duration_bounds_and_params_validated() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (admin, _, client) = setup(&env, 0, 1);
+
+        assert_eq!(
+            client.try_propose_operation(&admin, &SensitiveOperation::Pause, &(MIN_PROPOSAL_DURATION - 1)),
+            Err(Ok(ContractError::InvalidProposalDuration))
+        );
+        assert_eq!(
+            client.try_propose_operation(&admin, &SensitiveOperation::Pause, &(MAX_PROPOSAL_DURATION + 1)),
+            Err(Ok(ContractError::InvalidProposalDuration))
+        );
+
+        // Invalid royalty rate
+        assert_eq!(
+            client.try_propose_operation(&admin, &SensitiveOperation::SetRoyaltyRate(10_001), &MIN_PROPOSAL_DURATION),
+            Err(Ok(ContractError::RoyaltyRateTooHigh))
+        );
+
+        // Invalid anomaly threshold
+        assert_eq!(
+            client.try_propose_operation(&admin, &SensitiveOperation::SetAnomalyThreshold(-1), &MIN_PROPOSAL_DURATION),
+            Err(Ok(ContractError::InvalidAnomalyThreshold))
+        );
+    }
+
+    #[test]
+    fn various_sensitive_operations_execute_correctly() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (admin, _, client) = setup(&env, 0, 1);
+
+        // Pause
+        client.propose_operation(&admin, &SensitiveOperation::Pause, &MIN_PROPOSAL_DURATION);
+        assert!(client.is_paused());
+
+        // Unpause
+        client.propose_operation(&admin, &SensitiveOperation::Unpause, &MIN_PROPOSAL_DURATION);
+        assert!(!client.is_paused());
+
+        // Set incentives
+        client.propose_operation(&admin, &SensitiveOperation::SetIncentivesEnabled(true), &MIN_PROPOSAL_DURATION);
+        assert!(client.is_incentives_enabled());
+
+        // Set anomaly threshold
+        client.propose_operation(&admin, &SensitiveOperation::SetAnomalyThreshold(50_000_000), &MIN_PROPOSAL_DURATION);
+        assert_eq!(client.get_anomaly_threshold(), Some(50_000_000));
+
+        // Transfer admin
+        let new_admin = Address::generate(&env);
+        client.propose_operation(&admin, &SensitiveOperation::TransferAdmin(new_admin.clone()), &MIN_PROPOSAL_DURATION);
+        assert_eq!(client.get_admin(), new_admin);
     }
 }
