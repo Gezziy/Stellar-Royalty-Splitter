@@ -35,3 +35,4 @@ config/env/.env.prod
 .dr-test/
 # Blue-green deployment state (per deployment host, not source)
 .deploy-state
+fix.md

@@ -1,5 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
-import { api } from "../api";
+import { useState } from "react";
 import "./Dashboard.css";
 import { useSettings } from "../context/SettingsContext";
 import { DashboardSkeleton } from "./Skeleton";
@@ -16,21 +15,8 @@ import {
   type ContractPerformanceSummary,
 } from "../utils/contractPerformance";
 import { formatCurrency, formatNumber } from "../utils/format";
-
-interface DashboardStats {
-  totalDistributed: number;
-  totalTransactions: number;
-  averagePayout: number;
-  primaryRoyaltiesTotal: number;
-  secondaryRoyaltiesTotal: number;
-  topEarners: Array<{ address: string; totalEarned: number; payouts: number }>;
-  distributionTrends: Array<{ date: string; amount: number; count: number }>;
-  collaboratorStats: Array<{
-    address: string;
-    totalEarned: number;
-    payoutCount: number;
-  }>;
-}
+import { useAnalytics } from "../hooks/queries/useAnalytics";
+import { useContractPerformance } from "../hooks/queries/useContractPerformance";
 
 interface DashboardProps {
   contractId: string;
@@ -41,15 +27,13 @@ interface DashboardProps {
  * DashboardHeader, MetricsGrid, EarningsChart, TopEarners, and CollaboratorList
  * sub-components around a single data fetch. Also renders the Portfolio
  * Overview (contract performance) section from the upstream enhancement.
+ *
+ * Data fetching is now handled by React Query hooks (#832):
+ * - `useAnalytics` — per-contract analytics (deduplicates concurrent requests)
+ * - `useContractPerformance` — portfolio-level performance summary
  */
 export const Dashboard: React.FC<DashboardProps> = ({ contractId }) => {
   const { settings } = useSettings();
-  const [stats, setStats] = useState<DashboardStats | null>(null);
-  const [performanceData, setPerformanceData] = useState<ContractPerformanceSummary | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [performanceLoading, setPerformanceLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [performanceError, setPerformanceError] = useState<string | null>(null);
   const [allTime, setAllTime] = useState(false);
   const [dateRange, setDateRange] = useState<DateRange>({
     start: new Date(Date.now() - 90 * 24 * 60 * 60 * 1000)
@@ -60,65 +44,38 @@ export const Dashboard: React.FC<DashboardProps> = ({ contractId }) => {
   const [sortBy, setSortBy] = useState<"revenue" | "transactions" | "name">("revenue");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc");
 
-  const loadStats = useCallback(async () => {
-    if (!contractId) {
-      setLoading(false);
-      return;
-    }
-    setLoading(true);
-    setError(null);
-    try {
-      const response = await api.getAnalytics(
-        contractId,
-        allTime ? undefined : dateRange,
-      );
-      if (response.success) {
-        setStats(response.data);
-      } else {
-        setError(response.message || "Failed to load analytics");
-      }
-    } catch (err) {
-      console.error("Error loading dashboard stats:", err);
-      setError("Error loading analytics data");
-    } finally {
-      setLoading(false);
-    }
-  }, [contractId, allTime, dateRange]);
+  const activeDateRange = allTime ? undefined : dateRange;
 
-  const loadPerformance = useCallback(async () => {
-    setPerformanceLoading(true);
-    setPerformanceError(null);
-    try {
-      const response = await api.getContractPerformance(
-        allTime ? undefined : dateRange,
-        { sortBy, direction: sortDirection, limit: 100 },
-      );
-      if (response.success) {
-        setPerformanceData(
-          buildContractPerformanceSummary(response.data.contracts, {
-            sortBy,
-            direction: sortDirection,
-            limit: 100,
-          }),
-        );
-      } else {
-        setPerformanceError(response.message || "Failed to load contract performance");
-      }
-    } catch (err) {
-      console.error("Error loading contract performance:", err);
-      setPerformanceError("Error loading contract performance data");
-    } finally {
-      setPerformanceLoading(false);
-    }
-  }, [allTime, dateRange, sortBy, sortDirection]);
+  // React Query hooks — automatically deduplicated, cached, and background-refetched
+  const {
+    data: analyticsResponse,
+    isLoading: loading,
+    error: analyticsError,
+    refetch: refetchAnalytics,
+  } = useAnalytics(contractId || undefined, activeDateRange);
 
-  useEffect(() => {
-    void loadStats();
-  }, [loadStats]);
+  const {
+    data: performanceResponse,
+    isLoading: performanceLoading,
+    error: performanceErr,
+    refetch: refetchPerformance,
+  } = useContractPerformance(
+    activeDateRange,
+    { sortBy, direction: sortDirection, limit: 100 },
+  );
 
-  useEffect(() => {
-    void loadPerformance();
-  }, [loadPerformance]);
+  const stats = analyticsResponse?.success ? analyticsResponse.data : null;
+  const error = analyticsError ? (analyticsError as Error).message || "Error loading analytics data" : null;
+  const performanceError = performanceErr ? (performanceErr as Error).message || "Error loading contract performance data" : null;
+
+  const performanceData =
+    performanceResponse?.success && performanceResponse.data?.contracts
+      ? buildContractPerformanceSummary(performanceResponse.data.contracts, {
+          sortBy,
+          direction: sortDirection,
+          limit: 100,
+        })
+      : null;
 
   if (!contractId) {
     return (
@@ -148,8 +105,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ contractId }) => {
         onAllTimeToggle={() => setAllTime((v) => !v)}
         onDateRangeChange={setDateRange}
         onRefresh={() => {
-          void loadStats();
-          void loadPerformance();
+          void refetchAnalytics();
+          void refetchPerformance();
         }}
         sortBy={sortBy}
         onSortByChange={setSortBy}

@@ -25,6 +25,7 @@ const defaultProps = {
 describe("InitializeForm — accessibility", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockApi.listTemplates.mockResolvedValue({ data: [] });
   });
 
   test("every address input has an associated visible label", () => {
@@ -107,9 +108,9 @@ describe("InitializeForm — accessibility", () => {
     });
   });
 
-  test("status region uses aria-live=assertive for SR announcements", () => {
+  test("status region uses aria-live=polite for SR announcements", () => {
     render(<InitializeForm {...defaultProps} />);
-    const liveRegion = document.querySelector('[aria-live="assertive"]');
+    const liveRegion = document.querySelector('[aria-live="polite"]');
     expect(liveRegion).toBeTruthy();
   });
 
@@ -133,7 +134,7 @@ describe("InitializeForm — accessibility", () => {
     fireEvent.change(addrInput, { target: { value: WALLET } });
     fireEvent.change(pctInput, { target: { value: "100" } });
 
-    const submitBtn = screen.getByText(/Initialize contract/i);
+    const submitBtn = screen.getByText(/Commit initialization/i);
     fireEvent.click(submitBtn);
 
     await waitFor(() => {
