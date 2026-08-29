@@ -193,7 +193,9 @@ pub enum StorageKey {
     MigrationMemo,
     ContributorJoinDate,
     ContributorActivityCount,
+    RecipientEarnings(Address, Address),
 }
+
 
 
 /// Maximum number of rate-change entries kept in history.
@@ -377,6 +379,22 @@ impl RoyaltySplitter {
         }
         Ok(result as i128)
     }
+
+    fn record_recipient_earnings(
+        env: &Env,
+        recipient: &Address,
+        token: &Address,
+        amount: i128,
+    ) -> Result<i128, ContractError> {
+        let key = StorageKey::RecipientEarnings(recipient.clone(), token.clone());
+        let current: i128 = storage::persistent_get::<i128>(env, &key).unwrap_or(0);
+        let new_total = current
+            .checked_add(amount)
+            .ok_or(ContractError::ArithmeticOverflow)?;
+        storage::persistent_set(env, &key, &new_total);
+        Ok(new_total)
+    }
+
 
     fn initialize_validated(
         env: &Env,
@@ -1008,11 +1026,17 @@ impl RoyaltySplitter {
 
         for (addr, payout) in payouts.iter() {
             token_client.transfer(&env.current_contract_address(), &addr, &payout);
+            let total_earned = Self::record_recipient_earnings(&env, &addr, &token, payout)?;
             env.events().publish(
                 (symbol_short!("royalty"), symbol_short!("dist")),
-                (addr, payout, token.clone(), symbol_short!("primary")),
+                (addr.clone(), payout, token.clone(), symbol_short!("primary")),
+            );
+            env.events().publish(
+                (symbol_short!("royalty"), symbol_short!("earned")),
+                (addr, token.clone(), payout, total_earned),
             );
         }
+
 
         env.events().publish(
             (symbol_short!("royalty"), symbol_short!("dist_all")),
@@ -1125,9 +1149,14 @@ impl RoyaltySplitter {
                     distributed = distributed
                         .checked_add(payout)
                         .ok_or(ContractError::ArithmeticOverflow)?;
+                    let total_earned = Self::record_recipient_earnings(&env, &addr, &token, payout)?;
                     env.events().publish(
                         (symbol_short!("royalty"), symbol_short!("dist")),
                         (addr.clone(), payout, token.clone(), symbol_short!("primary")),
+                    );
+                    env.events().publish(
+                        (symbol_short!("royalty"), symbol_short!("earned")),
+                        (addr.clone(), token.clone(), payout, total_earned),
                     );
                 }
                 _ => {
@@ -1135,6 +1164,7 @@ impl RoyaltySplitter {
                 }
             }
         }
+
 
         if !failed.is_empty() {
             env.events().publish(
@@ -1288,11 +1318,17 @@ impl RoyaltySplitter {
 
             for (addr, payout) in payouts.iter() {
                 token_client.transfer(&env.current_contract_address(), &addr, &payout);
+                let total_earned = Self::record_recipient_earnings(&env, &addr, &token, payout)?;
                 env.events().publish(
                     (symbol_short!("royalty"), symbol_short!("dist")),
-                    (addr, payout, token.clone(), symbol_short!("batch")),
+                    (addr.clone(), payout, token.clone(), symbol_short!("batch")),
+                );
+                env.events().publish(
+                    (symbol_short!("royalty"), symbol_short!("earned")),
+                    (addr, token.clone(), payout, total_earned),
                 );
             }
+
 
             env.events().publish(
                 (symbol_short!("royalty"), symbol_short!("dist_all")),
@@ -1443,11 +1479,17 @@ impl RoyaltySplitter {
 
         for (addr, payout) in payouts.iter() {
             token_client.transfer(&env.current_contract_address(), &addr, &payout);
+            let total_earned = Self::record_recipient_earnings(&env, &addr, &token, payout)?;
             env.events().publish(
                 (symbol_short!("royalty"), symbol_short!("sec_pay")),
-                (addr, payout, token.clone(), symbol_short!("secondary")),
+                (addr.clone(), payout, token.clone(), symbol_short!("secondary")),
+            );
+            env.events().publish(
+                (symbol_short!("royalty"), symbol_short!("earned")),
+                (addr, token.clone(), payout, total_earned),
             );
         }
+
 
         storage::instance_set(&env, &StorageKey::SecondaryPool, &0_i128);
 
@@ -1850,11 +1892,17 @@ impl RoyaltySplitter {
 
         for (addr, payout) in payouts.iter() {
             token_client.transfer(&env.current_contract_address(), &addr, &payout);
+            let total_earned = Self::record_recipient_earnings(&env, &addr, &token, payout)?;
             env.events().publish(
                 (symbol_short!("royalty"), symbol_short!("dist")),
-                (addr, payout, token.clone(), symbol_short!("primary")),
+                (addr.clone(), payout, token.clone(), symbol_short!("primary")),
+            );
+            env.events().publish(
+                (symbol_short!("royalty"), symbol_short!("earned")),
+                (addr, token.clone(), payout, total_earned),
             );
         }
+
 
         env.events().publish(
             (symbol_short!("royalty"), symbol_short!("dist_all")),
@@ -2919,7 +2967,25 @@ impl RoyaltySplitter {
             .and_then(|m| m.get(proposal_id))
             .unwrap_or(Vec::new(&env))
     }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // #895 — Recipient earnings tracking per token
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// Returns the total cumulative earnings of a recipient for a specific token (#895).
+    pub fn get_recipient_earnings(env: Env, recipient: Address, token: Address) -> i128 {
+        storage::extend_instance_ttl(&env);
+        let key = StorageKey::RecipientEarnings(recipient, token);
+        if let Some(val) = storage::persistent_get::<i128>(&env, &key) {
+            storage::extend_persistent_ttl_for(&env, &key);
+            val
+        } else {
+            0
+        }
+    }
 }
+
+
 
 
 #[cfg(test)]
@@ -3913,5 +3979,140 @@ mod collaborative_operation_proposal_tests {
         let new_admin = Address::generate(&env);
         client.propose_operation(&admin, &SensitiveOperation::TransferAdmin(new_admin.clone()), &MIN_PROPOSAL_DURATION);
         assert_eq!(client.get_admin(), new_admin);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// #895 — Recipient earnings tracking per token tests
+// ─────────────────────────────────────────────────────────────────────────
+#[cfg(test)]
+mod recipient_earnings_tests {
+    use super::*;
+    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::token::{Client as TokenClient, StellarAssetClient};
+
+    fn setup(env: &Env) -> (Address, Address, Address, RoyaltySplitterClient<'_>) {
+        let contract_id = env.register_contract(None, RoyaltySplitter);
+        let client = RoyaltySplitterClient::new(env, &contract_id);
+        let collab_a = Address::generate(env);
+        let collab_b = Address::generate(env);
+        client.initialize(
+            &Vec::from_array(env, [collab_a.clone(), collab_b.clone()]),
+            &Vec::from_array(env, [6_000u32, 4_000u32]),
+        );
+        (contract_id, collab_a, collab_b, client)
+    }
+
+    fn create_token(env: &Env) -> (Address, StellarAssetClient<'_>, TokenClient<'_>) {
+        let admin = Address::generate(env);
+        let token = env.register_stellar_asset_contract(admin);
+        let asset_client = StellarAssetClient::new(env, &token);
+        let token_client = TokenClient::new(env, &token);
+        (token, asset_client, token_client)
+    }
+
+    #[test]
+    fn single_distribution_accumulates_earnings() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, collab_a, collab_b, client) = setup(&env);
+        let (token, asset_client, _) = create_token(&env);
+
+        asset_client.mint(&contract_id, &10_000);
+
+        // Before distribution, earnings are 0
+        assert_eq!(client.get_recipient_earnings(&collab_a, &token), 0);
+        assert_eq!(client.get_recipient_earnings(&collab_b, &token), 0);
+
+        client.distribute(&token);
+
+        // 60% of 10,000 = 6,000; 40% of 10,000 = 4,000
+        assert_eq!(client.get_recipient_earnings(&collab_a, &token), 6_000);
+        assert_eq!(client.get_recipient_earnings(&collab_b, &token), 4_000);
+
+        // Stranger has 0 earnings
+        let stranger = Address::generate(&env);
+        assert_eq!(client.get_recipient_earnings(&stranger, &token), 0);
+    }
+
+    #[test]
+    fn consecutive_distributions_accumulate_correctly() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, collab_a, collab_b, client) = setup(&env);
+        let (token, asset_client, _) = create_token(&env);
+
+        // First distribution: 10,000
+        asset_client.mint(&contract_id, &10_000);
+        client.distribute(&token);
+        assert_eq!(client.get_recipient_earnings(&collab_a, &token), 6_000);
+        assert_eq!(client.get_recipient_earnings(&collab_b, &token), 4_000);
+
+        // Second distribution: 20,000
+        asset_client.mint(&contract_id, &20_000);
+        client.distribute(&token);
+        assert_eq!(client.get_recipient_earnings(&collab_a, &token), 18_000);
+        assert_eq!(client.get_recipient_earnings(&collab_b, &token), 12_000);
+    }
+
+    #[test]
+    fn multi_token_earnings_tracking() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, collab_a, collab_b, client) = setup(&env);
+        let (token_a, asset_client_a, _) = create_token(&env);
+        let (token_b, asset_client_b, _) = create_token(&env);
+
+        asset_client_a.mint(&contract_id, &10_000);
+        client.distribute(&token_a);
+
+        asset_client_b.mint(&contract_id, &50_000);
+        client.distribute(&token_b);
+
+        // Token A earnings
+        assert_eq!(client.get_recipient_earnings(&collab_a, &token_a), 6_000);
+        assert_eq!(client.get_recipient_earnings(&collab_b, &token_a), 4_000);
+
+        // Token B earnings
+        assert_eq!(client.get_recipient_earnings(&collab_a, &token_b), 30_000);
+        assert_eq!(client.get_recipient_earnings(&collab_b, &token_b), 20_000);
+    }
+
+    #[test]
+    fn batch_distribution_accumulates_earnings() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, collab_a, collab_b, client) = setup(&env);
+        let (token_a, asset_client_a, _) = create_token(&env);
+        let (token_b, asset_client_b, _) = create_token(&env);
+
+        asset_client_a.mint(&contract_id, &10_000);
+        asset_client_b.mint(&contract_id, &20_000);
+
+        let tokens = Vec::from_array(&env, [token_a.clone(), token_b.clone()]);
+        client.batch_distribute(&tokens);
+
+        assert_eq!(client.get_recipient_earnings(&collab_a, &token_a), 6_000);
+        assert_eq!(client.get_recipient_earnings(&collab_b, &token_a), 4_000);
+        assert_eq!(client.get_recipient_earnings(&collab_a, &token_b), 12_000);
+        assert_eq!(client.get_recipient_earnings(&collab_b, &token_b), 8_000);
+    }
+
+    #[test]
+    fn secondary_distribution_accumulates_earnings() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, collab_a, collab_b, client) = setup(&env);
+        let (token, asset_client, token_client) = create_token(&env);
+
+        let payer = Address::generate(&env);
+        asset_client.mint(&payer, &10_000);
+        token_client.approve(&payer, &contract_id, &10_000, &200_000);
+
+        client.record_secondary_royalty(&token, &payer, &10_000);
+        client.distribute_secondary();
+
+        assert_eq!(client.get_recipient_earnings(&collab_a, &token), 6_000);
+        assert_eq!(client.get_recipient_earnings(&collab_b, &token), 4_000);
     }
 }

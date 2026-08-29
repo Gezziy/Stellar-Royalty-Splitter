@@ -6323,3 +6323,81 @@ fn test_collaborative_operation_proposal_expiration() {
     assert_ne!(client.get_royalty_rate(), 750);
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// #895 — Recipient earnings tracking per token integration tests
+// ─────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_recipient_earnings_tracking_on_distributions() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, client) = setup(&env);
+    let token_admin = Address::generate(&env);
+    let token_a = make_token(&env, &token_admin);
+    let token_b = make_token(&env, &token_admin);
+
+    let collab_a = Address::generate(&env);
+    let collab_b = Address::generate(&env);
+
+    client.initialize(
+        &vec![&env, collab_a.clone(), collab_b.clone()],
+        &vec![&env, 7000_u32, 3000_u32],
+    );
+
+    // Initial query returns 0
+    assert_eq!(client.get_recipient_earnings(&collab_a, &token_a), 0);
+    assert_eq!(client.get_recipient_earnings(&collab_b, &token_a), 0);
+    assert_eq!(client.get_recipient_earnings(&collab_a, &token_b), 0);
+    assert_eq!(client.get_recipient_earnings(&collab_b, &token_b), 0);
+
+    // First distribution of Token A: 10,000
+    mint(&env, &token_a, &contract_id, 10_000);
+    client.distribute(&token_a);
+
+    assert_eq!(client.get_recipient_earnings(&collab_a, &token_a), 7_000);
+    assert_eq!(client.get_recipient_earnings(&collab_b, &token_a), 3_000);
+
+    // Second distribution of Token A: 20,000
+    mint(&env, &token_a, &contract_id, 20_000);
+    client.distribute(&token_a);
+
+    assert_eq!(client.get_recipient_earnings(&collab_a, &token_a), 21_000);
+    assert_eq!(client.get_recipient_earnings(&collab_b, &token_a), 9_000);
+
+    // Distribution of Token B: 50,000 (distinct token tracking)
+    mint(&env, &token_b, &contract_id, 50_000);
+    client.distribute(&token_b);
+
+    assert_eq!(client.get_recipient_earnings(&collab_a, &token_b), 35_000);
+    assert_eq!(client.get_recipient_earnings(&collab_b, &token_b), 15_000);
+
+    // Token A totals unchanged
+    assert_eq!(client.get_recipient_earnings(&collab_a, &token_a), 21_000);
+    assert_eq!(client.get_recipient_earnings(&collab_b, &token_a), 9_000);
+}
+
+#[test]
+fn test_recipient_earnings_in_resilient_distribution() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, client) = setup(&env);
+    let token_admin = Address::generate(&env);
+    let token = make_token(&env, &token_admin);
+
+    let collab_a = Address::generate(&env);
+    let collab_b = Address::generate(&env);
+
+    client.initialize(
+        &vec![&env, collab_a.clone(), collab_b.clone()],
+        &vec![&env, 6000_u32, 4000_u32],
+    );
+
+    mint(&env, &token, &contract_id, 10_000);
+    let failed = client.distribute_resilient(&token, &vec![&env]);
+    assert!(failed.is_empty());
+
+    assert_eq!(client.get_recipient_earnings(&collab_a, &token), 6_000);
+    assert_eq!(client.get_recipient_earnings(&collab_b, &token), 4_000);
+}
+
+
