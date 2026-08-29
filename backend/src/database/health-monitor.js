@@ -279,8 +279,11 @@ export async function attemptReconnection() {
 
   try {
     await pool.drain();
-    // After drain, the pool is empty; new acquires will create fresh connections
-    // (SqlitePool lazily creates connections up to POOL_SIZE).
+    // After drain, the connections are closed and the one-way draining
+    // flag would permanently reject new acquires (and make the health probe
+    // below report "Pool is draining"). Rebuild the pool with fresh
+    // connections and clear the flag so it accepts acquires again.
+    pool.reinitialize();
     // Verify the new connection works.
     const health = await checkConnectionHealthAsync();
     if (health.connected) {

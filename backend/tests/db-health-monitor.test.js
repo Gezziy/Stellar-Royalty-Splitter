@@ -58,6 +58,9 @@ function resetPool() {
   pool.metrics.queueLength = 0;
   pool.metrics.timeouts = 0;
   pool.metrics.totalWaitMs = 0;
+  // `drain()` is one-way; rebuild the pool so a drained state in one test
+  // does not make every later acquire() reject with "Pool is draining".
+  pool.reinitialize?.();
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────
