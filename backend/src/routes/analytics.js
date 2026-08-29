@@ -57,6 +57,7 @@ router.get("/analytics/multi-contract", (req, res) => {
         SUM(CAST(dp.amountReceived AS REAL)) AS totalEarned,
         COUNT(*) AS payoutCount,
         AVG(CAST(dp.amountReceived AS REAL)) AS avgPayout,
+        MIN(t.timestamp) AS firstActivity,
         MAX(t.timestamp) AS lastActivity
       FROM distribution_payouts dp
       JOIN transactions t ON dp.transactionId = t.id
@@ -185,7 +186,10 @@ router.get("/analytics/:contractId", validateContractIdMiddleware, validateQuery
         `SELECT
           dp.collaboratorAddress as address,
           SUM(CAST(dp.amountReceived as REAL)) as totalEarned,
-          COUNT(*) as payoutCount
+          COUNT(*) as payoutCount,
+          AVG(CAST(dp.amountReceived as REAL)) as avgPayout,
+          MIN(t.timestamp) as firstActivity,
+          MAX(t.timestamp) as lastActivity
         FROM distribution_payouts dp
         JOIN transactions t ON dp.transactionId = t.id
         WHERE t.contractId = ? AND t.status = 'confirmed'
@@ -237,6 +241,7 @@ router.get("/analytics/:contractId", validateContractIdMiddleware, validateQuery
         collaboratorStats: collaboratorStats.map((c) => ({
           ...c,
           totalEarned: Math.round(c.totalEarned * 100) / 100,
+          avgPayout: Math.round((c.avgPayout ?? 0) * 100) / 100,
         })),
       },
     };

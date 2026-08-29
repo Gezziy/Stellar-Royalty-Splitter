@@ -34,6 +34,8 @@ import { adminRouter } from "./routes/admin.js";
 import { snapshotRouter } from "./routes/snapshots.js";
 import { communicationsRouter } from "./routes/communications.js";
 import { metricsRouter } from "./routes/metrics.js";
+import { applicationLogsRouter } from "./routes/application-logs.js";
+import { evaluateLogAlerts, pruneApplicationLogs } from "./database/application-logs.js";
 import { initializeSigningKey } from "./signing-key.js";
 import { sendError, notFoundHandler, errorHandler } from "./error-response.js";
 import { preferencesRouter } from "./routes/preferences.js";
@@ -68,6 +70,14 @@ import { setupGraphQL } from "./graphql.js";
 initializeDatabase();
 initializeSigningKey();
 
+// Keep the searchable log store bounded without requiring a separate worker.
+// `unref` means this maintenance timer cannot keep tests or graceful shutdowns alive.
+const logRetentionInterval = setInterval(() => {
+  pruneApplicationLogs(process.env.LOG_RETENTION_DAYS);
+}, 6 * 60 * 60 * 1000);
+logRetentionInterval.unref?.();
+pruneApplicationLogs(process.env.LOG_RETENTION_DAYS);
+
 // Start database connection health monitor (#496)
 startHealthMonitor();
 
@@ -83,12 +93,21 @@ app.use((req, res, next) => {
     const start = Date.now();
     res.on("finish", () => {
       const duration = Date.now() - start;
-      logger.info(`${req.method} ${req.originalUrl} ${res.statusCode} ${duration}ms`, {
+      const metadata = {
         method: req.method,
         path: req.originalUrl,
         status: res.statusCode,
         duration,
-      });
+      };
+      const log = res.statusCode >= 500 ? logger.error : res.statusCode >= 400 ? logger.warn : logger.info;
+      log.call(logger, "request completed", metadata);
+      if (res.statusCode >= 500) {
+        const alert = evaluateLogAlerts({
+          windowMinutes: process.env.LOG_ALERT_WINDOW_MINUTES,
+          errorThreshold: process.env.LOG_ALERT_ERROR_THRESHOLD,
+        });
+        if (alert.triggered) logger.error("Centralized log error-rate alert triggered", alert);
+      }
     });
     next();
   });
@@ -317,6 +336,7 @@ app.use("/api/v1/referrals", writeLimiter);
 app.use("/api/v1/referrals", referralsRouter);
 app.use("/metrics", metricsRouter);
 app.use("/api/v1/metrics", metricsRouter);
+app.use("/api/v1/observability", applicationLogsRouter);
 
 // Contributor performance rankings (#586)
 app.use("/api/v1/ranking", rankingRouter);

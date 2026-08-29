@@ -1,7 +1,7 @@
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { vi, type Mock } from "vitest";
 import "@testing-library/jest-dom";
-import { EarningsDashboard } from "./EarningsDashboard";
+import { EarningsDashboard, distributionAmount } from "./EarningsDashboard";
 
 // Mock the API module
 vi.mock("../api", () => ({
@@ -105,6 +105,37 @@ const mockSecondarySales = {
     },
   ],
 };
+
+describe("live distribution updates (#890)", () => {
+  it("extracts the amount from supported distribution event payloads", () => {
+    expect(distributionAmount({
+      type: "distribution_completed",
+      contractId: MOCK_CONTRACT,
+      transactionId: 1,
+      timestamp: "2026-08-29T12:00:00Z",
+      requestedAmount: "125.5",
+    })).toBe(125.5);
+    expect(distributionAmount({
+      type: "secondary_distribution_completed",
+      contractId: MOCK_CONTRACT,
+      transactionId: 2,
+      timestamp: "2026-08-29T12:00:00Z",
+      totalRoyalties: "42",
+    })).toBe(42);
+  });
+
+  it("ignores malformed or non-positive amounts", () => {
+    const event = {
+      type: "distribution_completed" as const,
+      contractId: MOCK_CONTRACT,
+      transactionId: 3,
+      timestamp: "2026-08-29T12:00:00Z",
+      requestedAmount: "not-a-number",
+    };
+    expect(distributionAmount(event)).toBeNull();
+    expect(distributionAmount({ ...event, requestedAmount: "0" })).toBeNull();
+  });
+});
 
 describe("EarningsDashboard Component", () => {
   beforeEach(() => {
@@ -318,7 +349,7 @@ describe("EarningsDashboard Component", () => {
       const selector = await screen.findByTestId("contract-selector");
       expect(selector).toBeInTheDocument();
 
-      const options = screen.getAllByRole("option");
+      const options = within(screen.getByTestId("contract-selector")).getAllByRole("option");
       // Two contracts + "All Contracts" aggregate option
       expect(options).toHaveLength(3);
       expect(
