@@ -7,8 +7,9 @@ use soroban_sdk::{
 };
 use stellar_royalty_splitter::{RATE_HISTORY_CAP, 
     auth, ContractError, DataKey, OperationType, Recipient, RoyaltySplitterClient, StorageKey, RoyaltyRateChange,
-    MIN_TTL, VERSION,
+    SensitiveOperation, OperationProposal, MIN_TTL, VERSION,
 };
+
 
 fn setup(env: &Env) -> (Address, RoyaltySplitterClient<'_>) {
     let contract_id = env.register_contract(None, stellar_royalty_splitter::RoyaltySplitter);
@@ -6174,3 +6175,151 @@ fn test_pause_operation_requires_admin_auth() {
     env.mock_auths(&[]);
     client.pause_operation(&OperationType::PrimaryDistribution);
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// #894 — Collaborative signing & threshold approval integration tests
+// ─────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_collaborative_operation_proposal_multisig_workflow() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, client) = setup(&env);
+    let admin1 = Address::generate(&env);
+    let admin2 = Address::generate(&env);
+    let admin3 = Address::generate(&env);
+    let b = Address::generate(&env);
+
+    client.initialize(
+        &vec![&env, admin1.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
+
+    // Configure 2-of-3 multi-admin
+    let admins = vec![&env, admin1.clone(), admin2.clone(), admin3.clone()];
+    client.set_admins(&admins, &2_u32);
+
+    // Initial state
+    assert!(!client.is_paused());
+
+    // Admin 1 proposes Pause operation
+    let prop_id = client.propose_operation(
+        &admin1,
+        &SensitiveOperation::Pause,
+        &3600_u64,
+    );
+    assert_eq!(prop_id, 1);
+
+    // 1 of 2 threshold -> not yet paused
+    let prop = client.get_operation_proposal(&prop_id);
+    assert_eq!(prop.threshold, 2);
+    assert_eq!(prop.approvals_count, 1);
+    assert!(!prop.executed);
+    assert!(!client.is_paused());
+
+    // Admin 2 approves -> threshold reached (2 of 2) -> executes Pause
+    let executed = client.approve_operation(&admin2, &prop_id);
+    assert!(executed);
+    assert!(client.is_paused());
+
+    let prop_after = client.get_operation_proposal(&prop_id);
+    assert_eq!(prop_after.approvals_count, 2);
+    assert!(prop_after.executed);
+
+    // Unpause proposal workflow
+    let unpause_id = client.propose_operation(
+        &admin3,
+        &SensitiveOperation::Unpause,
+        &3600_u64,
+    );
+    assert_eq!(unpause_id, 2);
+    assert!(client.is_paused());
+
+    let unpause_executed = client.approve_operation(&admin1, &unpause_id);
+    assert!(unpause_executed);
+    assert!(!client.is_paused());
+}
+
+#[test]
+fn test_collaborative_operation_proposal_duplicate_and_unauthorized_rejections() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, client) = setup(&env);
+    let admin1 = Address::generate(&env);
+    let admin2 = Address::generate(&env);
+    let b = Address::generate(&env);
+    let unauthorized = Address::generate(&env);
+
+    client.initialize(
+        &vec![&env, admin1.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
+
+    let admins = vec![&env, admin1.clone(), admin2.clone()];
+    client.set_admins(&admins, &2_u32);
+
+    // Non-admin cannot propose
+    assert_eq!(
+        client.try_propose_operation(&unauthorized, &SensitiveOperation::Pause, &3600_u64),
+        Err(Ok(ContractError::UnauthorizedSigner.into()))
+    );
+
+    let prop_id = client.propose_operation(&admin1, &SensitiveOperation::Pause, &3600_u64);
+
+    // Non-admin cannot approve
+    assert_eq!(
+        client.try_approve_operation(&unauthorized, &prop_id),
+        Err(Ok(ContractError::UnauthorizedSigner.into()))
+    );
+
+    // Proposer cannot double-approve
+    assert_eq!(
+        client.try_approve_operation(&admin1, &prop_id),
+        Err(Ok(ContractError::AlreadyApproved.into()))
+    );
+
+    // Admin 2 approves -> executes
+    client.approve_operation(&admin2, &prop_id);
+
+    // Replay / already executed proposal cannot be approved again
+    assert_eq!(
+        client.try_approve_operation(&admin2, &prop_id),
+        Err(Ok(ContractError::ProposalAlreadyExecuted.into()))
+    );
+}
+
+#[test]
+fn test_collaborative_operation_proposal_expiration() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, client) = setup(&env);
+    let admin1 = Address::generate(&env);
+    let admin2 = Address::generate(&env);
+    let b = Address::generate(&env);
+
+    client.initialize(
+        &vec![&env, admin1.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
+
+    let admins = vec![&env, admin1.clone(), admin2.clone()];
+    client.set_admins(&admins, &2_u32);
+
+    env.ledger().with_mut(|l| l.timestamp = 5_000);
+    let prop_id = client.propose_operation(
+        &admin1,
+        &SensitiveOperation::SetRoyaltyRate(750_u32),
+        &3600_u64,
+    );
+
+    // Advance time past expiration
+    env.ledger().with_mut(|l| l.timestamp = 5_000 + 3600 + 1);
+
+    // Approval after expiration fails
+    assert_eq!(
+        client.try_approve_operation(&admin2, &prop_id),
+        Err(Ok(ContractError::ProposalExpired.into()))
+    );
+    assert_ne!(client.get_royalty_rate(), 750);
+}
+

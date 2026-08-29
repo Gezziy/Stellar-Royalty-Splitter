@@ -54,7 +54,12 @@ pub mod msg {
     pub const RESOLVE_DISPUTE_ADMIN: &str =
         "resolve_dispute: admin authorization required";
     pub const CLAWBACK_ADMIN: &str = "clawback: admin authorization required";
+    pub const PROPOSE_OPERATION_ADMIN: &str =
+        "propose_operation: admin authorization required";
+    pub const APPROVE_OPERATION_ADMIN: &str =
+        "approve_operation: admin authorization required";
 }
+
 
 /// Requires admin authorization; panics with `message` if missing.
 pub fn require_admin(env: &Env, admin: &Address, message: &str) {
