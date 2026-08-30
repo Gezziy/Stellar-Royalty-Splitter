@@ -184,6 +184,9 @@ describe("EarningsDashboard Component", () => {
     expect(screen.getByText("You")).toBeInTheDocument(); // Badge for connected wallet
     expect(screen.getByText("60.00%")).toBeInTheDocument();
     expect(screen.getByText("40.00%")).toBeInTheDocument();
+
+    // Verify Advanced Analytics Dashboard is rendered
+    expect(screen.getByTestId("advanced-analytics-dashboard")).toBeInTheDocument();
   });
 
   it("filters collaborators by search query", async () => {
