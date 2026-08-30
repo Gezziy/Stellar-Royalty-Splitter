@@ -20,6 +20,9 @@ import logger from "../logger.js";
  * "submitted"/"confirmed" step here — this handler only builds XDR for the
  * frontend to sign and submit directly to the network; the backend never
  * observes the signed submission or its on-chain confirmation.
+ *
+ * The XDR is built exactly once: `retryBuildTx` already retries transient
+ * RPC failures internally (exponential backoff, transient errors only).
  */
 export async function buildAndRecordTransaction({
   contractId,
@@ -38,7 +41,11 @@ export async function buildAndRecordTransaction({
     walletAddress,
   });
 
-  // Build the transaction XDR (instrumented span for RPC call latency)
+  // Build the transaction XDR (instrumented span for RPC call latency).
+  // This is the ONLY build call — `retryBuildTx` handles transient RPC
+  // failures internally with exponential backoff. (A previous revision
+  // called `retryBuildTx` a second time here, discarding the first XDR and
+  // needlessly consuming a fresh sequence number per request.)
   const txXdr = await startSpan(
     `rpc.${transactionType}`,
     {
@@ -56,9 +63,6 @@ export async function buildAndRecordTransaction({
       walletAddress,
       transactionMetadata
     );
-
-    // Build the transaction XDR
-    const txXdr = await retryBuildTx(walletAddress, contractId, transactionType, scvlArgs);
 
     // Log the audit event
     addAuditLog(contractId, auditAction, walletAddress, {

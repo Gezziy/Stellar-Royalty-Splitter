@@ -7,6 +7,7 @@ import { CopyButton } from "./CopyButton";
 import { Skeleton } from "./Skeleton";
 import MultiContractComparison from "./MultiContractComparison";
 import { LiveEarningsCounter } from "./LiveEarningsCounter";
+import ContributorPerformanceComparison from "./ContributorPerformanceComparison";
 import { useWebSocket, type DistributionEvent } from "../hooks/useWebSocket";
 import {
   buildExportFilename,
@@ -19,12 +20,28 @@ import {
 import { AdvancedAnalyticsDashboard } from "./AdvancedAnalyticsDashboard";
 import "./EarningsDashboard.css";
 
-interface CollaboratorEarning {
+export interface CollaboratorEarning {
   address: string;
   basisPoints: number;
   totalEarned: number;
   payoutCount: number;
   avgPayout: number;
+  firstActivity: string | null;
+  lastActivity: string | null;
+}
+
+interface LiveDistribution {
+  amount: number;
+  type: DistributionEvent["type"];
+  transactionId: string | number;
+  timestamp: string;
+}
+
+export function distributionAmount(event: DistributionEvent): number | null {
+  const raw = event.royaltyAmount ?? event.totalRoyalties ?? event.requestedAmount;
+  if (raw === undefined || raw === null) return null;
+  const amount = Number(raw);
+  return Number.isFinite(amount) && amount > 0 ? amount : null;
 }
 
 interface RecentPayout {
@@ -86,6 +103,7 @@ export const EarningsDashboard: React.FC<EarningsDashboardProps> = ({
   const [totalDistributed, setTotalDistributed] = useState<number>(0);
   const [primaryTotal, setPrimaryTotal] = useState<number>(0);
   const [secondaryTotal, setSecondaryTotal] = useState<number>(0);
+  const [latestDistribution, setLatestDistribution] = useState<LiveDistribution | null>(null);
   const [collaborators, setCollaborators] = useState<CollaboratorEarning[]>([]);
   const [recentPayouts, setRecentPayouts] = useState<RecentPayout[]>([]);
   const [activeTab, setActiveTab] = useState<"all" | "primary" | "secondary">("all");
@@ -97,13 +115,13 @@ export const EarningsDashboard: React.FC<EarningsDashboardProps> = ({
   const [exporting, setExporting] = useState<"pdf" | "csv" | "json" | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
 
-  const loadDashboardData = useCallback(async () => {
+  const loadDashboardData = useCallback(async (showLoader = true) => {
     if (!activeContract) {
       setLoading(false);
       return;
     }
 
-    setLoading(true);
+    if (showLoader) setLoading(true);
     setError(null);
 
     try {
@@ -125,7 +143,13 @@ export const EarningsDashboard: React.FC<EarningsDashboardProps> = ({
       let totalDist = 0;
       let primTotal = 0;
       let secTotal = 0;
-      let collabStatsMap = new Map<string, { totalEarned: number; payoutCount: number }>();
+      let collabStatsMap = new Map<string, {
+        totalEarned: number;
+        payoutCount: number;
+        avgPayout: number;
+        firstActivity: string | null;
+        lastActivity: string | null;
+      }>();
 
       if (analyticsRes.status === "fulfilled" && analyticsRes.value.success) {
         const data = analyticsRes.value.data;
@@ -137,6 +161,9 @@ export const EarningsDashboard: React.FC<EarningsDashboardProps> = ({
           collabStatsMap.set(c.address, {
             totalEarned: c.totalEarned,
             payoutCount: c.payoutCount,
+            avgPayout: c.avgPayout ?? (c.payoutCount > 0 ? c.totalEarned / c.payoutCount : 0),
+            firstActivity: c.firstActivity ?? null,
+            lastActivity: c.lastActivity ?? null,
           });
         });
       }
@@ -155,13 +182,21 @@ export const EarningsDashboard: React.FC<EarningsDashboardProps> = ({
       let collabList: CollaboratorEarning[] = [];
       if (collabRes.status === "fulfilled" && Array.isArray(collabRes.value)) {
         collabList = collabRes.value.map((c) => {
-          const stats = collabStatsMap.get(c.address) || { totalEarned: 0, payoutCount: 0 };
+          const stats = collabStatsMap.get(c.address) || {
+            totalEarned: 0,
+            payoutCount: 0,
+            avgPayout: 0,
+            firstActivity: null,
+            lastActivity: null,
+          };
           return {
             address: c.address,
             basisPoints: c.basisPoints,
             totalEarned: stats.totalEarned,
             payoutCount: stats.payoutCount,
-            avgPayout: stats.payoutCount > 0 ? stats.totalEarned / stats.payoutCount : 0,
+            avgPayout: stats.avgPayout,
+            firstActivity: stats.firstActivity,
+            lastActivity: stats.lastActivity,
           };
         });
       } else if (collabStatsMap.size > 0) {
@@ -171,7 +206,9 @@ export const EarningsDashboard: React.FC<EarningsDashboardProps> = ({
             basisPoints: 0,
             totalEarned: stats.totalEarned,
             payoutCount: stats.payoutCount,
-            avgPayout: stats.payoutCount > 0 ? stats.totalEarned / stats.payoutCount : 0,
+            avgPayout: stats.avgPayout,
+            firstActivity: stats.firstActivity,
+            lastActivity: stats.lastActivity,
           });
         });
       }
@@ -219,7 +256,7 @@ export const EarningsDashboard: React.FC<EarningsDashboardProps> = ({
       console.error("Error loading earnings dashboard:", err);
       setError("Failed to load earnings dashboard data. Please try again.");
     } finally {
-      setLoading(false);
+      if (showLoader) setLoading(false);
     }
   }, [activeContract]);
 
@@ -229,10 +266,27 @@ export const EarningsDashboard: React.FC<EarningsDashboardProps> = ({
 
   // Handle distribution events for real-time earnings updates
   const handleDistributionEvent = useCallback((event: DistributionEvent) => {
-    if (event.contractId === activeContract) {
-      // Reload dashboard data to get updated totals
-      void loadDashboardData();
+    if (event.contractId !== activeContract) return;
+
+    const amount = distributionAmount(event);
+    if (amount !== null) {
+      setTotalDistributed((current) => current + amount);
+      if (event.type === "secondary_distribution_completed" || event.type === "secondary_sale_recorded") {
+        setSecondaryTotal((current) => current + amount);
+      } else {
+        setPrimaryTotal((current) => current + amount);
+      }
+      setLatestDistribution({
+        amount,
+        type: event.type,
+        transactionId: event.transactionId,
+        timestamp: event.timestamp,
+      });
     }
+
+    // Reconcile collaborator rows and payout history in the background without
+    // replacing the visible dashboard with a loading skeleton.
+    void loadDashboardData(false);
   }, [activeContract, loadDashboardData]);
 
   // Connect to WebSocket for real-time distribution updates
@@ -438,6 +492,19 @@ export const EarningsDashboard: React.FC<EarningsDashboardProps> = ({
         </button>
       </header>
 
+      {latestDistribution && (
+        <div className="live-distribution-banner" role="status" data-testid="latest-distribution">
+          <span className="live-distribution-pulse" aria-hidden="true">●</span>
+          <span>
+            Latest distribution added <strong>{formatCurrency(latestDistribution.amount, settings.displayCurrency)}</strong>
+            {latestDistribution.type === "secondary_sale_recorded" ? " from a secondary sale" : " to the dashboard"}.
+          </span>
+          <time dateTime={latestDistribution.timestamp}>
+            {new Date(latestDistribution.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+          </time>
+        </div>
+      )}
+
       {exportError && (
         <div className="export-error-banner" role="alert">
           {exportError}
@@ -586,6 +653,11 @@ export const EarningsDashboard: React.FC<EarningsDashboardProps> = ({
           </table>
         </div>
       </section>
+
+      <ContributorPerformanceComparison
+        collaborators={collaborators}
+        currency={settings.displayCurrency}
+      />
 
       {/* Recent Payout Activity Section */}
       <section className="dashboard-section recent-activity-section" aria-labelledby="payout-activity-heading">

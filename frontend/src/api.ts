@@ -497,6 +497,9 @@ export const api = {
           address: string;
           totalEarned: number;
           payoutCount: number;
+          avgPayout?: number;
+          firstActivity?: string | null;
+          lastActivity?: string | null;
         }>;
       };
       message?: string;
@@ -623,8 +626,6 @@ export const api = {
   getVerification: (walletAddress: string) => get<any>(`/verification/${walletAddress}`),
   startVerification: (walletAddress: string, data?: any) => post<any>(`/verification/start`, { walletAddress, ...data }),
   advanceVerification: (walletAddress: string, step?: any) => post<any>(`/verification/advance`, { walletAddress, step }),
-
-  getHealth: () => get<any>("/v1/health"),
 
   getContractFees: (contractId: string) => get<any>(`/fees/${contractId}`),
 
