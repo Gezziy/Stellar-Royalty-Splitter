@@ -404,16 +404,12 @@ impl RoyaltySplitter {
     }
 
     fn require_collaborators(env: &Env) -> Result<Vec<Address>, ContractError> {
-        env.storage()
-            .instance()
-            .get(&StorageKey::Collaborators)
+        storage::persistent_get::<Vec<Address>>(env, &StorageKey::Collaborators)
             .ok_or(ContractError::NoCollaborators)
     }
 
     fn require_share_map(env: &Env) -> Result<Map<Address, u32>, ContractError> {
-        env.storage()
-            .instance()
-            .get(&StorageKey::ShareMap)
+        storage::persistent_get::<Map<Address, u32>>(env, &StorageKey::ShareMap)
             .ok_or(ContractError::NoShareMap)
     }
 
@@ -1192,6 +1188,15 @@ impl RoyaltySplitter {
 
         Self::check_admin_auth(&env, auth::msg::DISTRIBUTE_OVERRIDE_ADMIN);
 
+        Self::distribute_with_override_impl(&env, token, override_recipients)
+    }
+
+    fn distribute_with_override_impl(
+        env: &Env,
+        token: Address,
+        override_recipients: Vec<Recipient>,
+    ) -> Result<(), ContractError> {
+
         if Self::is_emergency_paused_flag(&env) {
             return Err(ContractError::EmergencyContractPaused);
         }
@@ -1249,8 +1254,6 @@ impl RoyaltySplitter {
         override_recipients: Vec<Recipient>,
     ) -> Result<Vec<Address>, ContractError> {
         storage::extend_instance_ttl(&env);
-
-        Self::check_admin_auth(&env, auth::msg::DISTRIBUTE_RESILIENT_ADMIN);
 
         if Self::is_blocked(&env, OperationType::PrimaryDistribution) {
             return Err(ContractError::ContractPaused);
@@ -1341,8 +1344,8 @@ impl RoyaltySplitter {
     }
 
     pub fn distribute(env: Env, token: Address) -> Result<(), ContractError> {
-        Self::distribute_with_override(env.clone(), token, Vec::new(&env))?;
-        Ok(())
+        storage::extend_instance_ttl(&env);
+        Self::distribute_with_override_impl(&env, token, Vec::new(&env))
     }
 
     pub fn batch_distribute(env: Env, tokens: Vec<Address>) -> Result<(), ContractError> {
