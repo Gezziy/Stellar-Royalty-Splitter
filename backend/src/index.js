@@ -58,6 +58,7 @@ import { startSnapshotScheduler } from "./jobs/snapshot-job.js";
 import { startWebhookRetryScheduler } from "./jobs/retry-failed-webhooks.js";
 import { adminApiKeysRouter } from "./routes/admin-api-keys.js";
 import { recordApiKeyRequest } from "./database/rate-limit.js";
+import { recordHttpRequest } from "./metrics.js";
 import { createMetricsPusher } from "./metrics-pushgateway.js";
 import { transactionFinalityRouter } from "./routes/transaction-finality.js";
 import { startFinalityCleanupScheduler } from "./jobs/finality-cleanup-job.js";
@@ -83,6 +84,7 @@ app.use((req, res, next) => {
     const start = Date.now();
     res.on("finish", () => {
       const duration = Date.now() - start;
+      recordHttpRequest(req.method, req.route?.path || req.path, res.statusCode, duration);
       logger.info(`${req.method} ${req.originalUrl} ${res.statusCode} ${duration}ms`, {
         method: req.method,
         path: req.originalUrl,

@@ -30,6 +30,23 @@ const metrics = {
 
 // Comprehensive Prometheus metrics (#816)
 const register = new client.Registry();
+client.collectDefaultMetrics({ register });
+
+// HTTP request metrics used by the operational dashboard and alert rules.
+const httpRequests = new client.Counter({
+  name: "http_requests_total",
+  help: "Total HTTP requests handled by the API",
+  labelNames: ["method", "route", "status"],
+  registers: [register],
+});
+
+const httpRequestDuration = new client.Histogram({
+  name: "http_request_duration_seconds",
+  help: "HTTP request duration in seconds",
+  labelNames: ["method", "route", "status"],
+  buckets: [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10],
+  registers: [register],
+});
 
 // Counter for function invocations
 const contractFunctionDuration = new client.Histogram({
@@ -388,7 +405,7 @@ export function getMetricsSnapshot() {
   };
 }
 
-export function prometheusMetrics() {
+export async function prometheusMetrics() {
   const snapshot = getMetricsSnapshot();
   const legacyMetrics = [
     "# HELP stellar_distribute_calls_total Total distribute endpoint calls.",
@@ -401,7 +418,7 @@ export function prometheusMetrics() {
     "# TYPE stellar_transactions_failed_total counter",
     `stellar_transactions_failed_total ${snapshot.transactionsFailedTotal}`,
     "# HELP stellar_horizon_response_time_average_ms Average Horizon response time in milliseconds.",
-    "# TYPE stellar_horizon_response_time_average_ms guage",
+    "# TYPE stellar_horizon_response_time_average_ms gauge",
     `stellar_horizon_response_time_average_ms ${formatMetricValue(
       snapshot.averageHorizonResponseTimeMs,
     )}`,
@@ -412,7 +429,7 @@ export function prometheusMetrics() {
     "# TYPE stellar_oversized_requests_rejected_total counter",
     `stellar_oversized_requests_rejected_total ${snapshot.oversizedRequestsRejectedTotal}`,
     "# HELP stellar_dos_rate_limited_total Requests rate-limited due to repeated oversized payload attacks.",
-    "# TYPA stellar_dos_rate_limited_total counter",
+    "# TYPE stellar_dos_rate_limited_total counter",
     `stellar_dos_rate_limited_total ${snapshot.dosRateLimitedTotal}`,
     "# HELP stellar_health_check_total Total detailed health check requests.",
     "# TYPE stellar_health_check_total counter",
@@ -457,7 +474,7 @@ export function prometheusMetrics() {
     "",
   ].join("\n");
 
-  return register.metrics() + "\n" + legacyMetrics;
+  return (await register.metrics()) + "\n" + legacyMetrics;
 }
 
 export function recordConnectionHealthCheck(m) {
@@ -490,6 +507,14 @@ export function resetMetrics() {
 }
 
 // New comprehensive metrics functions (#816)
+export function recordHttpRequest(method, route, status, durationMs) {
+  const labels = { method, route: route || "unknown", status: String(status) };
+  httpRequests.inc(labels);
+  if (Number.isFinite(durationMs) && durationMs >= 0) {
+    httpRequestDuration.observe(labels, durationMs / 1000);
+  }
+}
+
 export function recordContractFunctionDuration(contractId, functionName, durationSeconds) {
   contractFunctionDuration.observe({ contractId, functionName }, durationSeconds);
 }
