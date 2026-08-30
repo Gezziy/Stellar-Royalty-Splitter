@@ -29,6 +29,10 @@ const {
   retryMetrics,
 } = await import("../src/rpc-retry.js");
 
+// Metrics module (real prom-client; per-file module isolation keeps the
+// registry fresh for this test file).
+const { getMetricsSnapshot, prometheusMetrics } = await import("../src/metrics.js");
+
 describe("RPC Retry Handler", () => {
   beforeEach(() => {
     retryMetrics.reset();
@@ -543,6 +547,119 @@ describe("RPC Retry Handler", () => {
       });
 
       expect(operation).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // ─── Metrics wiring (retry count + success rate) ─────────────────────────
+
+  describe("withRetry metrics wiring", () => {
+    const snapshot = () => {
+      const s = getMetricsSnapshot();
+      return {
+        attempts: s.rpcRetryAttempts,
+        successes: s.rpcRetrySuccesses,
+        exhausted: s.rpcRetryExhausted,
+      };
+    };
+
+    test("records an attempt and a success when a retry recovers the operation", async () => {
+      const before = snapshot();
+      const operation = jest
+        .fn()
+        .mockRejectedValueOnce({ status: 503 })
+        .mockResolvedValueOnce({ data: "success" });
+
+      await withRetry(operation, { operationType: "metricsTest", baseBackoffMs: 5 });
+
+      const after = snapshot();
+      expect(after.attempts - before.attempts).toBe(1);
+      expect(after.successes - before.successes).toBe(1);
+      expect(after.exhausted - before.exhausted).toBe(0);
+
+      const inMemory = retryMetrics.getMetrics();
+      expect(inMemory.successfulRetries).toBeGreaterThanOrEqual(1);
+    });
+
+    test("records attempts and exhaustion when all retries fail", async () => {
+      const before = snapshot();
+      const operation = jest.fn().mockRejectedValue({ status: 503 });
+
+      await expect(
+        withRetry(operation, { operationType: "metricsTest", baseBackoffMs: 5 })
+      ).rejects.toEqual({ status: 503 });
+
+      const after = snapshot();
+      // 3 attempts total → 2 retries executed, then exhausted on the last one
+      expect(after.attempts - before.attempts).toBe(2);
+      expect(after.successes - before.successes).toBe(0);
+      expect(after.exhausted - before.exhausted).toBe(1);
+    });
+
+    test("records nothing for permanent errors (no retry happens)", async () => {
+      const before = snapshot();
+      const operation = jest.fn().mockRejectedValue({ status: 400 });
+
+      await expect(
+        withRetry(operation, { operationType: "metricsTest" })
+      ).rejects.toEqual({ status: 400 });
+
+      const after = snapshot();
+      expect(after.attempts - before.attempts).toBe(0);
+      expect(after.successes - before.successes).toBe(0);
+      expect(after.exhausted - before.exhausted).toBe(0);
+    });
+
+    function labeledValue(promText, metricName, operationType) {
+      const line = promText
+        .split("\n")
+        .find((l) => l.startsWith(`${metricName}{operationType="${operationType}"}`));
+      return line ? Number(line.split(" ").pop()) : 0;
+    }
+
+    test("exposes retry counters in the prometheus metrics output", async () => {
+      const before = await prometheusMetrics();
+      const operation = jest
+        .fn()
+        .mockRejectedValueOnce({ status: 503 })
+        .mockResolvedValueOnce({ data: "success" });
+
+      await withRetry(operation, { operationType: "metricsProm", baseBackoffMs: 5 });
+
+      const promText = await prometheusMetrics();
+      // Legacy (unlabeled) retry counters
+      expect(promText).toContain("stellar_rpc_retry_attempts_total");
+      expect(promText).toContain("stellar_rpc_retry_successes_total");
+      expect(promText).toContain("stellar_rpc_retry_exhausted_total");
+      // Labeled prometheus counters from the registry (delta, since other
+      // tests in this file also increment labeled counters)
+      expect(
+        labeledValue(promText, "stellar_rpc_retries_total", "metricsProm") -
+          labeledValue(before, "stellar_rpc_retries_total", "metricsProm")
+      ).toBe(1);
+      expect(
+        labeledValue(promText, "stellar_rpc_retry_successes_total", "metricsProm") -
+          labeledValue(before, "stellar_rpc_retry_successes_total", "metricsProm")
+      ).toBe(1);
+    });
+  });
+
+  // ─── Per-call backoff option ─────────────────────────────────────────────
+
+  describe("per-call baseBackoffMs", () => {
+    test("honors a small per-call base backoff (not the global default)", async () => {
+      const operation = jest
+        .fn()
+        .mockRejectedValueOnce({ status: 503 })
+        .mockResolvedValueOnce({ data: "success" });
+
+      const startedAt = Date.now();
+      await withRetry(operation, { operationType: "getAccount", baseBackoffMs: 20 });
+      const elapsed = Date.now() - startedAt;
+
+      // With the (now-respected) 20ms base the wait is ~20ms ± jitter.
+      // If the option were ignored, the global 1000ms default would dominate.
+      expect(elapsed).toBeLessThan(400);
+      expect(elapsed).toBeGreaterThanOrEqual(18);
     });
   });
 });

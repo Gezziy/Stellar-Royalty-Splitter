@@ -83,7 +83,7 @@ export default function DistributeForm({
   const { status, setStatus, clearStatus } = useFormStatus();
 
   // Use TransactionContext's in-flight flag as the primary loading gate (#391)
-  const loading = isInFlight;
+  const [loading, setLoading] = useState(false);
   const [successTxHash, setSuccessTxHash] = useState<string | null>(null);
   const [touched, setTouched] = useState<{ tokenId?: boolean; amount?: boolean }>({});
   // #653 — full transaction lifecycle state for granular wallet feedback
@@ -251,11 +251,20 @@ export default function DistributeForm({
 
       // #391: Phase 2 — signing
       updatePhase("signing", { transactionId: res.transactionId });
-
       txLifecycle.setStage("submitting");
-      const hash = await signAndSubmitTransaction(res.xdr, network);
 
+      // Single stable "Retrying submission…" state in the UI while the
+      // submission layer transparently retries transient RPC/network
+      // failures (100ms / 500ms / 2s backoff, max 3 retries). Permanent
+      // failures surface immediately as errors.
+      const hash = await signAndSubmitTransaction(res.xdr, network, {
+        onRetry: () => updatePhase("confirming", { label: "Retrying submission…" }),
+      });
+
+      // #391: Phase 3 — confirming, with countdown
+      updatePhase("confirming", { txHash: hash });
       txLifecycle.setStage("confirming");
+
       await api.confirmTransaction(hash, {
         status: "confirmed",
         blockTime: new Date().toISOString(),

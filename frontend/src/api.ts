@@ -507,6 +507,9 @@ export const api = {
           address: string;
           totalEarned: number;
           payoutCount: number;
+          avgPayout?: number;
+          firstActivity?: string | null;
+          lastActivity?: string | null;
         }>;
       };
       message?: string;
