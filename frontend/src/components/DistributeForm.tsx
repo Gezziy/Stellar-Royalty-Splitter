@@ -253,7 +253,13 @@ export default function DistributeForm({
       updatePhase("signing", { transactionId: res.transactionId });
       txLifecycle.setStage("submitting");
 
-      const hash = await signAndSubmitTransaction(res.xdr, network);
+      // Single stable "Retrying submission…" state in the UI while the
+      // submission layer transparently retries transient RPC/network
+      // failures (100ms / 500ms / 2s backoff, max 3 retries). Permanent
+      // failures surface immediately as errors.
+      const hash = await signAndSubmitTransaction(res.xdr, network, {
+        onRetry: () => updatePhase("confirming", { label: "Retrying submission…" }),
+      });
 
       // #391: Phase 3 — confirming, with countdown
       updatePhase("confirming", { txHash: hash });
@@ -477,8 +483,6 @@ export default function DistributeForm({
         <button
           type="submit"
           className="btn-primary btn-with-spinner"
-          disabled={loading || exceedsBalance || !amount}
-          aria-busy={loading}
           data-testid="distribute-submit"
           disabled={loading || txLifecycle.isActive || exceedsBalance || !amount || !tokenIdValid || networkMismatch}
           aria-busy={loading || txLifecycle.isActive}
@@ -490,7 +494,6 @@ export default function DistributeForm({
           type="button"
           className="btn-secondary"
           onClick={clearForm}
-          disabled={loading || (!tokenId && !amount && !draftPrompt)}
           data-testid="distribute-clear"
           disabled={loading || txLifecycle.isActive || (!tokenId && !amount && !draftPrompt)}
         >

@@ -627,8 +627,6 @@ export const api = {
   startVerification: (walletAddress: string, data?: any) => post<any>(`/verification/start`, { walletAddress, ...data }),
   advanceVerification: (walletAddress: string, step?: any) => post<any>(`/verification/advance`, { walletAddress, step }),
 
-  getHealth: () => get<any>("/v1/health"),
-
   getContractFees: (contractId: string) => get<any>(`/fees/${contractId}`),
 
   getTaxComplianceReport: () => get<any>("/v1/contributor-tax/report"),
