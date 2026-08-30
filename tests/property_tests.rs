@@ -25,11 +25,7 @@
 #![cfg(all(test, feature = "testutils"))]
 
 use proptest::prelude::*;
-use soroban_sdk::{
-    testutils::Address as _,
-    token::StellarAssetClient,
-    vec, Address, Env,
-};
+use soroban_sdk::{testutils::Address as _, token::StellarAssetClient, vec, Address, Env};
 use stellar_royalty_splitter::{ContractError, RoyaltySplitterClient};
 
 // ── Test helpers (mirrors integration_test.rs) ────────────────────────────
@@ -103,11 +99,17 @@ fn shares_summing_to_10000(n: usize) -> impl Strategy<Value = Vec<u32>> {
 // ── Proptest configuration ────────────────────────────────────────────────
 
 fn config_1000() -> ProptestConfig {
-    ProptestConfig { cases: 1_000, ..ProptestConfig::default() }
+    ProptestConfig {
+        cases: 1_000,
+        ..ProptestConfig::default()
+    }
 }
 
 fn config_10000() -> ProptestConfig {
-    ProptestConfig { cases: 10_000, ..ProptestConfig::default() }
+    ProptestConfig {
+        cases: 10_000,
+        ..ProptestConfig::default()
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

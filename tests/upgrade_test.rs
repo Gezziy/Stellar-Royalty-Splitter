@@ -17,9 +17,8 @@ use soroban_sdk::{
 use stellar_royalty_splitter::{ContractError, DataKey, Recipient, RoyaltySplitterClient, VERSION};
 
 // ── WASM artifact (built by `cargo build --target wasm32-unknown-unknown --release`) ──
-const CONTRACT_WASM: &[u8] = include_bytes!(
-    "../target/wasm32-unknown-unknown/release/stellar_royalty_splitter.wasm"
-);
+const CONTRACT_WASM: &[u8] =
+    include_bytes!("../target/wasm32-unknown-unknown/release/stellar_royalty_splitter.wasm");
 
 // ── shared helpers ────────────────────────────────────────────────────────────
 
@@ -294,8 +293,14 @@ fn test_upgrade_preserves_default_recipients() {
 
     let defaults = vec![
         &env,
-        Recipient { address: admin.clone(), share: 7000_u32 },
-        Recipient { address: b.clone(), share: 3000_u32 },
+        Recipient {
+            address: admin.clone(),
+            share: 7000_u32,
+        },
+        Recipient {
+            address: b.clone(),
+            share: 3000_u32,
+        },
     ];
     client.set_default_recipients(&defaults);
 
@@ -399,10 +404,16 @@ fn test_rollback_while_paused() {
 
     let wasm_hash = upload_wasm(&env);
     client.update_wasm(&wasm_hash); // forward
-    assert!(raw_is_paused(&env, &contract_id), "paused flag must survive upgrade");
+    assert!(
+        raw_is_paused(&env, &contract_id),
+        "paused flag must survive upgrade"
+    );
 
     client.update_wasm(&wasm_hash); // rollback
-    assert!(raw_is_paused(&env, &contract_id), "paused flag must survive rollback");
+    assert!(
+        raw_is_paused(&env, &contract_id),
+        "paused flag must survive rollback"
+    );
 
     client.unpause();
     assert!(!client.is_paused());
@@ -430,9 +441,18 @@ fn test_rollback_after_recipient_update() {
     // Change recipients after the upgrade
     let new_recipients = vec![
         &env,
-        Recipient { address: admin.clone(), share: 4000_u32 },
-        Recipient { address: b.clone(), share: 3000_u32 },
-        Recipient { address: c.clone(), share: 3000_u32 },
+        Recipient {
+            address: admin.clone(),
+            share: 4000_u32,
+        },
+        Recipient {
+            address: b.clone(),
+            share: 3000_u32,
+        },
+        Recipient {
+            address: c.clone(),
+            share: 3000_u32,
+        },
     ];
     client.set_recipients(&new_recipients);
 
@@ -474,9 +494,18 @@ fn test_upgrade_path_then_update_recipients() {
     // Add a third collaborator post-upgrade
     client.set_recipients(&vec![
         &env,
-        Recipient { address: admin.clone(), share: 5000_u32 },
-        Recipient { address: b.clone(), share: 3000_u32 },
-        Recipient { address: c.clone(), share: 2000_u32 },
+        Recipient {
+            address: admin.clone(),
+            share: 5000_u32,
+        },
+        Recipient {
+            address: b.clone(),
+            share: 3000_u32,
+        },
+        Recipient {
+            address: c.clone(),
+            share: 2000_u32,
+        },
     ]);
 
     mint(&env, &token, &contract_id, 10_000);
@@ -539,10 +568,7 @@ fn test_upgrade_path_preserves_multi_sig_admins() {
     );
 
     // Configure a multi-sig admin list
-    client.set_admins(
-        &vec![&env, admin.clone(), extra_admin.clone()],
-        &2_u32,
-    );
+    client.set_admins(&vec![&env, admin.clone(), extra_admin.clone()], &2_u32);
 
     let wasm_hash = upload_wasm(&env);
     client.update_wasm(&wasm_hash);
@@ -638,8 +664,14 @@ fn test_distribute_with_override_works_after_upgrade() {
 
     let override_list = vec![
         &env,
-        Recipient { address: admin.clone(), share: 5000_u32 },
-        Recipient { address: c.clone(), share: 5000_u32 },
+        Recipient {
+            address: admin.clone(),
+            share: 5000_u32,
+        },
+        Recipient {
+            address: c.clone(),
+            share: 5000_u32,
+        },
     ];
 
     mint(&env, &token, &contract_id, 1000);
@@ -720,7 +752,12 @@ fn test_storage_layout_compatibility_across_upgrades() {
     assert_eq!(raw_admin(&env, &contract_id), admin);
     assert_eq!(raw_royalty_rate(&env, &contract_id), 250);
     assert_eq!(raw_collaborators(&env, &contract_id).len(), 2);
-    assert_eq!(raw_share_map(&env, &contract_id).get(admin.clone()).unwrap(), 7500);
+    assert_eq!(
+        raw_share_map(&env, &contract_id)
+            .get(admin.clone())
+            .unwrap(),
+        7500
+    );
     assert_eq!(raw_default_recipients(&env, &contract_id).len(), 2);
 
     // Perform WASM upgrade
@@ -731,7 +768,12 @@ fn test_storage_layout_compatibility_across_upgrades() {
     assert_eq!(raw_admin(&env, &contract_id), admin);
     assert_eq!(raw_royalty_rate(&env, &contract_id), 250);
     assert_eq!(raw_collaborators(&env, &contract_id).len(), 2);
-    assert_eq!(raw_share_map(&env, &contract_id).get(admin.clone()).unwrap(), 7500);
+    assert_eq!(
+        raw_share_map(&env, &contract_id)
+            .get(admin.clone())
+            .unwrap(),
+        7500
+    );
     assert_eq!(raw_default_recipients(&env, &contract_id).len(), 2);
 }
 
@@ -799,4 +841,3 @@ fn test_royalty_distribution_consistency_across_upgrades() {
     assert_eq!(token_client.balance(&collaborator), 4000);
     assert_eq!(client.get_distribute_count(), 2);
 }
-

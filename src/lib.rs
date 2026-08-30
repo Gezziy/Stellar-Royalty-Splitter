@@ -7,6 +7,8 @@ use soroban_sdk::{
     BytesN, Env, IntoVal, Map, String, Symbol, Val, Vec,
 };
 
+pub const MAX_SECONDARY_POOL_SIZE: i128 = 1_000_000_000_000;
+
 #[contracttype]
 #[derive(Clone)]
 pub struct Recipient {
@@ -471,7 +473,6 @@ impl RoyaltySplitter {
         if collaborators.is_empty() {
             return Err(ContractError::EmptyCollaborators);
         }
-
         if collaborators.len() > MAX_COLLABORATORS {
             return Err(ContractError::TooManyRecipients);
         }
@@ -524,6 +525,12 @@ impl RoyaltySplitter {
         env.events().publish(
             (symbol_short!("royalty"), symbol_short!("init")),
             (collaborators, shares),
+        );
+        storage::instance_set(&env, &StorageKey::SecondaryRoyaltyPool, &0_i128);
+        storage::instance_set(
+            &env,
+            &StorageKey::MaxSecondaryPoolSize,
+            &MAX_SECONDARY_POOL_SIZE,
         );
         Ok(())
     }
@@ -1484,8 +1491,24 @@ impl RoyaltySplitter {
             .checked_add(royalty_amount)
             .ok_or(ContractError::ArithmeticOverflow)?;
 
+        let max_pool = env
+            .storage()
+            .instance()
+            .get(&StorageKey::MaxSecondaryPoolSize)
+            .unwrap_or(MAX_SECONDARY_POOL_SIZE);
+        if new_pool > max_pool {
+            return Err(ContractError::SecondaryPoolLimitExceeded);
+        }
+
         storage::instance_set(&env, &StorageKey::SecondaryPool, &new_pool);
         storage::instance_set(&env, &StorageKey::SecondaryToken, &token);
+
+        if new_pool > warning_threshold(max_pool) {
+            env.events().publish(
+                (symbol_short!("royalty"), symbol_short!("pool_warn")),
+                new_pool,
+            );
+        }
 
         let share_map: Map<Address, u32> =
             storage::persistent_get::<Map<Address, u32>>(&env, &StorageKey::ShareMap)
@@ -1740,6 +1763,34 @@ impl RoyaltySplitter {
             .instance()
             .get(&StorageKey::SecondaryPool)
             .unwrap_or(0)
+    }
+
+    pub fn get_secondary_royalty_pool(env: Env) -> i128 {
+        Self::get_secondary_pool(env)
+    }
+
+    pub fn get_max_secondary_pool_size(env: Env) -> i128 {
+        storage::extend_instance_ttl(&env);
+        env.storage()
+            .instance()
+            .get(&StorageKey::MaxSecondaryPoolSize)
+            .unwrap_or(MAX_SECONDARY_POOL_SIZE)
+    }
+
+    pub fn set_max_secondary_pool_size(env: Env, new_limit: i128) -> Result<(), ContractError> {
+        storage::extend_instance_ttl(&env);
+        if new_limit <= 0 {
+            return Err(ContractError::AmountNotPositive);
+        }
+
+        Self::check_admin_auth(&env, "set_max_secondary_pool_size");
+        let current_pool = Self::get_secondary_pool(env.clone());
+        if new_limit < current_pool {
+            return Err(ContractError::SecondaryPoolLimitExceeded);
+        }
+
+        storage::instance_set(&env, &StorageKey::MaxSecondaryPoolSize, &new_limit);
+        Ok(())
     }
 
     pub fn get_last_distribution(env: Env) -> Option<u64> {
@@ -2896,6 +2947,10 @@ impl RoyaltySplitter {
         storage::persistent_set(env, &StorageKey::PendingDistributions, &pending);
         Ok(())
     }
+}
+
+fn warning_threshold(max_pool: i128) -> i128 {
+    (max_pool / 100) * 80 + ((max_pool % 100) * 80 / 100)
 }
 
 #[cfg(test)]
