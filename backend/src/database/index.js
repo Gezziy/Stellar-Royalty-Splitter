@@ -30,10 +30,6 @@ export {
   getTransactionDetails,
   getTransactionById,
   getRetryEligibleTransactions,
-  markTransactionRetrying,
-  markTransactionRetryExhausted,
-  getRetryExhaustedTransactions,
-  getTransactionRetryCount,
   RETRY_BACKOFF_MS,
   MAX_RETRY_COUNT,
 } from "./transactions.js";
@@ -50,6 +46,16 @@ export {
 
 // Audit logging
 export { getAuditLog, addAuditLog, countAuditLog } from "./audit.js";
+
+// Centralized application logs (#874)
+export {
+  appendApplicationLog,
+  queryApplicationLogs,
+  countApplicationLogs,
+  pruneApplicationLogs,
+  evaluateLogAlerts,
+  DEFAULT_RETENTION_DAYS,
+} from "./application-logs.js";
 
 // Secondary royalties
 export {
@@ -280,6 +286,18 @@ export {
   getPendingFinalityRecords,
   deleteOldFinalityRecords,
 } from "./transaction-finality.js";
+
+// Connection health monitoring (#496)
+export {
+  checkConnectionHealth,
+  checkConnectionHealthAsync,
+  attemptReconnection,
+  startHealthMonitor,
+  stopHealthMonitor,
+  getHealthStatus,
+  getHealthMetrics,
+  resetHealthMonitorState,
+} from "./health-monitor.js";
 
 // Default export for backwards compatibility
 import { db } from "./core.js";

@@ -68,17 +68,10 @@ export default function DistributeForm({
   walletAddress,
   onSuccess,
 }: Props) {
-  const txEntry = useTransactionStore((s) => s.current);
-  const beginTransaction = useTransactionStore((s) => s.beginTransaction);
-  const updatePhase = useTransactionStore((s) => s.updatePhase);
-  const resetTx = useTransactionStore((s) => s.reset);
-  const isInFlight =
-    txEntry !== null &&
-    (txEntry.phase === "building" ||
-      txEntry.phase === "signing" ||
-      txEntry.phase === "confirming");
-
   const { network, networkMismatch } = useNetwork();
+  const { current: txEntry, beginTransaction, updatePhase, reset: resetTx } = useTransaction();
+  const isInFlight = useIsTransactionInFlight();
+
   const [tokenId, setTokenId] = useState("");
   const [amount, setAmount] = useState("");
   const [contractBalance, setContractBalance] = useState<string | null>(null);
@@ -90,9 +83,7 @@ export default function DistributeForm({
   const { status, setStatus, clearStatus } = useFormStatus();
 
   // Use TransactionContext's in-flight flag as the primary loading gate (#391)
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const loading = isInFlight || isSubmitting;
-  const setLoading = setIsSubmitting;
+  const [loading, setLoading] = useState(false);
   const [successTxHash, setSuccessTxHash] = useState<string | null>(null);
   const [touched, setTouched] = useState<{ tokenId?: boolean; amount?: boolean }>({});
   // #653 — full transaction lifecycle state for granular wallet feedback
@@ -262,7 +253,13 @@ export default function DistributeForm({
       updatePhase("signing", { transactionId: res.transactionId });
       txLifecycle.setStage("submitting");
 
-      const hash = await signAndSubmitTransaction(res.xdr, network);
+      // Single stable "Retrying submission…" state in the UI while the
+      // submission layer transparently retries transient RPC/network
+      // failures (100ms / 500ms / 2s backoff, max 3 retries). Permanent
+      // failures surface immediately as errors.
+      const hash = await signAndSubmitTransaction(res.xdr, network, {
+        onRetry: () => updatePhase("confirming", { label: "Retrying submission…" }),
+      });
 
       // #391: Phase 3 — confirming, with countdown
       updatePhase("confirming", { txHash: hash });
@@ -486,6 +483,7 @@ export default function DistributeForm({
         <button
           type="submit"
           className="btn-primary btn-with-spinner"
+          data-testid="distribute-submit"
           disabled={loading || txLifecycle.isActive || exceedsBalance || !amount || !tokenIdValid || networkMismatch}
           aria-busy={loading || txLifecycle.isActive}
           data-testid="distribute-submit"
@@ -497,6 +495,7 @@ export default function DistributeForm({
           type="button"
           className="btn-secondary"
           onClick={clearForm}
+          data-testid="distribute-clear"
           disabled={loading || txLifecycle.isActive || (!tokenId && !amount && !draftPrompt)}
           data-testid="distribute-clear"
         >

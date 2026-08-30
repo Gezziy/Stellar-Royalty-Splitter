@@ -1,15 +1,11 @@
-import React, { createContext, useContext } from "react";
-import { useSettingsStore, SettingsType as BaseSettingsType } from "../store/settingsStore";
-import {
-  useContractsStore,
-  isValidContractId,
-  normalizeContractList,
-} from "../store/contractsStore";
+import React, { createContext, useContext, useState, useEffect } from "react";
+import i18n from "../i18n";
 
 export { isValidContractId, normalizeContractList };
 
 export interface SettingsType extends BaseSettingsType {
   trackedContracts: string[];
+  language: "en" | "es" | "de" | "zh";
 }
 
 interface SettingsContextType {
@@ -19,14 +15,56 @@ interface SettingsContextType {
   removeTrackedContract: (contractId: string) => void;
 }
 
-const SettingsContext = createContext<SettingsContextType | undefined>(undefined);
+const DEFAULTS: SettingsType = {
+  autoSaveAuditLog: true,
+  notifyOnDistribution: true,
+  displayCurrency: "XLM",
+  maxPayoutsPerTransaction: 10,
+  minPayoutAmount: 0.1,
+  trackedContracts: [],
+  language: "en",
+};
 
-export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const baseSettings = useSettingsStore((s) => s.settings);
-  const updateSettings = useSettingsStore((s) => s.updateSettings);
-  const trackedContracts = useContractsStore((s) => s.trackedContracts);
-  const addTrackedContract = useContractsStore((s) => s.addTrackedContract);
-  const removeTrackedContract = useContractsStore((s) => s.removeTrackedContract);
+// A contract ID on Stellar starts with "C" and is 56 characters long.
+export function isValidContractId(id: string): boolean {
+  return id.startsWith("C") && id.length === 56;
+}
+
+export function normalizeContractList(contracts: string[]): string[] {
+  return Array.from(new Set(contracts.map((c) => c.trim()).filter(isValidContractId)));
+}
+
+const SettingsContext = createContext<SettingsContextType | undefined>(
+  undefined,
+);
+
+export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({
+  children,
+}) => {
+  const [settings, setSettings] = useState<SettingsType>(() => {
+    try {
+      const raw = localStorage.getItem("royaltySplitterSettings");
+      if (raw) return { ...DEFAULTS, ...JSON.parse(raw) };
+    } catch (_) {}
+    return DEFAULTS;
+  });
+
+  useEffect(() => {
+    // Persist settings whenever they change
+    try {
+      localStorage.setItem("royaltySplitterSettings", JSON.stringify(settings));
+    } catch (_) {}
+  }, [settings]);
+
+  useEffect(() => {
+    // Sync i18n language with settings language preference
+    if (settings.language && i18n.language !== settings.language) {
+      i18n.changeLanguage(settings.language);
+    }
+  }, [settings.language]);
+
+  const updateSettings = (patch: Partial<SettingsType>) =>
+    setSettings((s) => ({ ...s, ...patch }));
 
   const settings: SettingsType = {
     ...baseSettings,

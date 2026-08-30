@@ -42,6 +42,10 @@ export function logErrorSafely(
     url: typeof window !== "undefined" ? window.location.href : "unknown",
   };
 
+  if (process.env.NODE_ENV === "production") {
+    delete safeMetadata.stack;
+  }
+
   const errorLog: ErrorLog = {
     message: error.message,
     metadata: safeMetadata,

@@ -4,6 +4,7 @@ Base URL: `http://localhost:3001` (default)
 
 All JSON POST bodies must use `Content-Type: application/json`.
 JSON request bodies are limited to `10kb`; oversized requests return `413 Payload Too Large`.
+Mutating JSON requests (`POST`, `PUT`, and `PATCH`) are subject to a **Request Complexity Budget** (default limit: `1000`, configured via `REQUEST_COMPLEXITY_LIMIT`). Requests exceeding this limit return `400 Bad Request` (`code: request_too_complex`).
 
 ## Error responses
 
@@ -34,6 +35,8 @@ and internal errors — uses the same JSON shape and is built by
 | `retryAfter` | Suggested retry delay in seconds (null if not retryable) |
 | `details_url` | Link to error documentation in the error catalog |
 | `details` | Present only on validation errors; an array of `{ field, message }` issues |
+| `complexity_score` | Present on `request_too_complex` errors; computed complexity score |
+| `limit` | Present on `request_too_complex` errors; maximum allowed complexity score |
 
 Stack traces and other internal details are never included in a response —
 they're written to the server-side logger (`backend/src/logger.js`) instead,
@@ -46,6 +49,7 @@ line.
 | ---- | ---- | ---- |
 | `validation_failed` | 400 | Request body/query failed schema or manual validation |
 | `bad_request` | 400 | Generic malformed request (fallback for unlisted 400s) |
+| `request_too_complex` | 400 | Request body exceeds configured complexity limit (#892) |
 | `invalid_contract_id` | 400 | `contractId` is not a valid `C...` Soroban contract address |
 | `invalid_stellar_address` | 400 | A wallet address is not a valid `G...` Stellar address |
 | `invalid_query_parameter` | 400 | A query param (e.g. `limit`/`offset`) failed validation |
@@ -65,6 +69,49 @@ Any status without a listed code above falls back to `error` via
 `normalizeErrorCode()` (`backend/src/error-response.js`) — this only happens
 for statuses not yet given a specific code and should be treated as a gap to
 fill, not a stable code to depend on.
+
+## Request Complexity Budgeting (#892)
+
+To prevent resource exhaustion from deeply nested structures, giant arrays, or excessive key-value pairs that remain below raw byte-size limits, incoming request bodies are scored using a deterministic complexity algorithm before expensive downstream parsing, schema validations, or cryptographic verification occur.
+By default, the middleware applies to `POST`, `PUT`, and `PATCH` requests.
+
+### Scoring Rules
+
+| Component | Weight / Formula | Rationale |
+| :--- | :--- | :--- |
+| **Base Payload** | `+1` | Fixed base overhead for any parsed payload |
+| **Object Key (Field Count)** | `+1` per key | Proportional to key parsing, hashing, and schema traversal |
+| **Array Element** | `+1` per element | Proportional to array iteration, allocation, and item validation |
+| **Nested Structure** | `+2` per object/array | Overhead of initializing nested scopes and sub-validators |
+| **Nesting Depth** | `+(depth * 3)` | Multiplier penalizing deep recursive hierarchies |
+| **String Volume** | `+Math.floor(length / 256)` | Additional score for large text fields within nested structures |
+
+### Configuration
+
+Deployments can configure or override the complexity budget via environment variable:
+
+```env
+REQUEST_COMPLEXITY_LIMIT=1000
+```
+
+### Error Response Example (HTTP 400)
+
+When a request exceeds the limit, it is rejected immediately with HTTP 400:
+
+```json
+{
+  "status": 400,
+  "code": "request_too_complex",
+  "message": "Request exceeds maximum complexity limit of 1000 (calculated score: 1052)",
+  "error": "Request exceeds maximum complexity limit of 1000 (calculated score: 1052)",
+  "retryable": false,
+  "retryAfter": null,
+  "details_url": "docs/errors#request_too_complex",
+  "complexity_score": 1052,
+  "limit": 1000
+}
+```
+
 
 ## Health
 
