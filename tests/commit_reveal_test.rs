@@ -2,7 +2,9 @@
 
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
-    vec, Address, Env, Vec, xdr::ToXdr,
+    vec,
+    xdr::ToXdr,
+    Address, Env, Vec,
 };
 use stellar_royalty_splitter::{RoyaltySplitter, RoyaltySplitterClient};
 
@@ -11,7 +13,11 @@ fn setup(env: &Env) -> RoyaltySplitterClient {
     RoyaltySplitterClient::new(env, &contract_id)
 }
 
-fn commitment(env: &Env, collaborators: &Vec<Address>, shares: &Vec<u32>) -> (soroban_sdk::BytesN<32>, soroban_sdk::BytesN<32>) {
+fn commitment(
+    env: &Env,
+    collaborators: &Vec<Address>,
+    shares: &Vec<u32>,
+) -> (soroban_sdk::BytesN<32>, soroban_sdk::BytesN<32>) {
     let collaborator_hash = env.crypto().sha256(&collaborators.clone().to_xdr(env));
     let share_hash = env.crypto().sha256(&shares.clone().to_xdr(env));
     (collaborator_hash, share_hash)
@@ -48,10 +54,12 @@ fn reveal_before_next_ledger_fails() {
     let (collaborators, shares) = inputs(&env);
     let (collaborator_hash, share_hash) = commitment(&env, &collaborators, &shares);
     client.commit_initialize(&collaborator_hash, &share_hash);
-    
+
     assert_eq!(
         client.try_reveal_initialize(&collaborators, &shares),
-        Err(Ok(stellar_royalty_splitter::ContractError::InitRevealTooEarly.into()))
+        Err(Ok(
+            stellar_royalty_splitter::ContractError::InitRevealTooEarly.into()
+        ))
     );
     println!("TEST PASSED SUCCESSFULLY");
 }
@@ -70,7 +78,9 @@ fn collaborator_hash_mismatch_fails() {
 
     assert_eq!(
         client.try_reveal_initialize(&changed, &shares),
-        Err(Ok(stellar_royalty_splitter::ContractError::InitCommitmentMismatch.into()))
+        Err(Ok(
+            stellar_royalty_splitter::ContractError::InitCommitmentMismatch.into()
+        ))
     );
 }
 
@@ -87,7 +97,9 @@ fn shares_hash_mismatch_fails() {
 
     assert_eq!(
         client.try_reveal_initialize(&collaborators, &changed_shares),
-        Err(Ok(stellar_royalty_splitter::ContractError::InitCommitmentMismatch.into()))
+        Err(Ok(
+            stellar_royalty_splitter::ContractError::InitCommitmentMismatch.into()
+        ))
     );
 }
 
@@ -100,7 +112,9 @@ fn reveal_without_commitment_fails() {
 
     assert_eq!(
         client.try_reveal_initialize(&collaborators, &shares),
-        Err(Ok(stellar_royalty_splitter::ContractError::NoInitializationCommitment.into()))
+        Err(Ok(
+            stellar_royalty_splitter::ContractError::NoInitializationCommitment.into()
+        ))
     );
 }
 
@@ -117,6 +131,8 @@ fn commitment_is_consumed_after_successful_reveal() {
 
     assert_eq!(
         client.try_reveal_initialize(&collaborators, &shares),
-        Err(Ok(stellar_royalty_splitter::ContractError::AlreadyInitialized.into()))
+        Err(Ok(
+            stellar_royalty_splitter::ContractError::AlreadyInitialized.into()
+        ))
     );
 }

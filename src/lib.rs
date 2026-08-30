@@ -250,7 +250,6 @@ pub enum StorageKey {
     PendingDistributions,
 }
 
-
 /// Maximum number of rate-change entries kept in history.
 /// Older entries are dropped when the cap is reached.
 pub const RATE_HISTORY_CAP: u32 = 20;
@@ -387,14 +386,10 @@ pub enum ContractError {
     ProposalAlreadyExecuted = 45,
     AlreadyVoted = 46,
     InvalidProposalDuration = 47,
-    OracleNotConfigured = 48,
-    OracleUnavailable = 49,
-    OracleInvalid = 50,
-    AlreadyApproved = 51,
-    ProposalExpired = 52,
-    UnauthorizedSigner = 53,
+    AlreadyApproved = 48,
+    ProposalExpired = 49,
+    UnauthorizedSigner = 50,
 }
-
 
 #[contract]
 pub struct RoyaltySplitter;
@@ -446,13 +441,16 @@ impl RoyaltySplitter {
     /// Resolve the effective recipient list once for each distribution call.
     /// Keeping this path shared avoids repeating the defaults/collaborators/share
     /// map reads in resilient and normal distributions.
-    fn resolve_recipients(env: &Env, override_recipients: Vec<Recipient>) -> Result<Vec<Recipient>, ContractError> {
+    fn resolve_recipients(
+        env: &Env,
+        override_recipients: Vec<Recipient>,
+    ) -> Result<Vec<Recipient>, ContractError> {
         if !override_recipients.is_empty() {
             return Ok(override_recipients);
         }
 
-        let defaults: Vec<Recipient> = storage::persistent_get(env, &StorageKey::DefaultRecipients)
-            .unwrap_or(Vec::new(&env));
+        let defaults: Vec<Recipient> =
+            storage::persistent_get(env, &StorageKey::DefaultRecipients).unwrap_or(Vec::new(&env));
         if !defaults.is_empty() {
             return Ok(defaults);
         }
@@ -462,8 +460,8 @@ impl RoyaltySplitter {
         let mut recipients = Vec::new(env);
         for address in collaborators.iter() {
             recipients.push_back(Recipient {
-                address,
                 share: share_map.get(address.clone()).unwrap_or(0),
+                address: address.clone(),
             });
         }
         Ok(recipients)
@@ -802,7 +800,7 @@ impl RoyaltySplitter {
         storage::extend_instance_ttl(&env);
         Self::check_admin_auth(&env, "set_royalty_oracle: admin authorization required");
         if update_frequency == 0 || max_staleness == 0 {
-            return Err(ContractError::OracleInvalid);
+            return Err(ContractError::InvalidTimelockDuration);
         }
         storage::instance_set(
             &env,
@@ -835,15 +833,15 @@ impl RoyaltySplitter {
             .storage()
             .instance()
             .get(&StorageKey::OracleConfig)
-            .ok_or(ContractError::OracleNotConfigured)?;
+            .ok_or(ContractError::NotInitialized)?;
         let decimals: u32 = env
             .try_invoke_contract::<u32, soroban_sdk::InvokeError>(
                 &config.source,
                 &symbol_short!("decimals"),
                 Vec::new(&env),
             )
-            .map_err(|_| ContractError::OracleUnavailable)?
-            .map_err(|_| ContractError::OracleUnavailable)?;
+            .map_err(|_| ContractError::NotInitialized)?
+            .map_err(|_| ContractError::NotInitialized)?;
         let asset_val: Val = config.asset.clone().into_val(&env);
         let mut args = Vec::new(&env);
         args.push_back(asset_val);
@@ -853,25 +851,25 @@ impl RoyaltySplitter {
                 &symbol_short!("lastprice"),
                 args,
             )
-            .map_err(|_| ContractError::OracleUnavailable)?
-            .map_err(|_| ContractError::OracleUnavailable)?;
-        let quote = quote.ok_or(ContractError::OracleUnavailable)?;
+            .map_err(|_| ContractError::NotInitialized)?
+            .map_err(|_| ContractError::NotInitialized)?;
+        let quote = quote.ok_or(ContractError::NotInitialized)?;
         let now = env.ledger().timestamp();
         if quote.timestamp > now || now - quote.timestamp > config.max_staleness {
-            return Err(ContractError::OracleUnavailable);
+            return Err(ContractError::NotInitialized);
         }
         if quote.price <= 0 || decimals > 18 {
-            return Err(ContractError::OracleInvalid);
+            return Err(ContractError::InvalidTimelockDuration);
         }
         let divisor = 10_i128
             .checked_pow(decimals)
-            .ok_or(ContractError::OracleInvalid)?;
+            .ok_or(ContractError::InvalidTimelockDuration)?;
         let rate = quote
             .price
             .checked_div(divisor)
-            .ok_or(ContractError::OracleInvalid)?;
+            .ok_or(ContractError::InvalidTimelockDuration)?;
         if rate <= 0 || rate > 10_000 {
-            return Err(ContractError::OracleInvalid);
+            return Err(ContractError::InvalidTimelockDuration);
         }
         Ok(rate as u32)
     }
@@ -884,10 +882,10 @@ impl RoyaltySplitter {
             .storage()
             .instance()
             .get(&StorageKey::OracleConfig)
-            .ok_or(ContractError::OracleNotConfigured)?;
+            .ok_or(ContractError::NotInitialized)?;
         let now = env.ledger().timestamp();
         if config.last_updated != 0 && now - config.last_updated < config.update_frequency {
-            return Err(ContractError::OracleUnavailable);
+            return Err(ContractError::NotInitialized);
         }
         let rate = Self::fetch_royalty_rate_from_oracle(env.clone())?;
         Self::set_royalty_rate_value(&env, rate)?;
@@ -2827,10 +2825,9 @@ impl RoyaltySplitter {
         };
 
         let mut records: Vec<DistributionRecord> =
-            storage::persistent_get(env, &StorageKey::DistributionRecords)
-                .unwrap_or(Vec::new(env));
+            storage::persistent_get(env, &StorageKey::DistributionRecords).unwrap_or(Vec::new(env));
 
-        if records.len() >= DISTRIBUTION_HISTORY_LIMIT as usize {
+        if records.len() >= DISTRIBUTION_HISTORY_LIMIT {
             records.remove(0);
         }
 
@@ -2855,14 +2852,14 @@ impl RoyaltySplitter {
                 .unwrap_or(Vec::new(&env));
 
         let start = offset as usize;
-        let end = (offset + limit) as usize;
+        let end = offset.saturating_add(limit) as usize;
 
-        if start >= records.len() {
+        if start >= records.len() as usize {
             return Ok(Vec::new(&env));
         }
 
         let mut result = Vec::new(&env);
-        for i in start..end.min(records.len()) {
+        for i in start..end.min(records.len() as usize) {
             result.push_back(records.get(i as u32).unwrap());
         }
 
@@ -2911,19 +2908,21 @@ impl RoyaltySplitter {
             storage::persistent_get(env, &StorageKey::PendingDistributions)
                 .unwrap_or(Vec::new(env));
 
+        let mut updated = Vec::new(env);
         let mut found = false;
-        for record in pending.iter_mut() {
+        for record in pending.iter() {
+            let mut record = record;
             if record.token == token {
                 record.pending_amount = amount;
                 record.last_updated = env.ledger().timestamp();
                 record.recipient_count = recipient_count;
                 found = true;
-                break;
             }
+            updated.push_back(record);
         }
 
         if !found {
-            pending.push_back(PendingDistribution {
+            updated.push_back(PendingDistribution {
                 token,
                 pending_amount: amount,
                 last_updated: env.ledger().timestamp(),
@@ -2931,7 +2930,7 @@ impl RoyaltySplitter {
             });
         }
 
-        storage::persistent_set(env, &StorageKey::PendingDistributions, &pending);
+        storage::persistent_set(env, &StorageKey::PendingDistributions, &updated);
         Ok(())
     }
 
@@ -2940,8 +2939,7 @@ impl RoyaltySplitter {
     // ─────────────────────────────────────────────────────────────────────
 
     fn is_authorized_admin(env: &Env, signer: &Address) -> bool {
-        let admin_list: Option<Vec<Address>> =
-            env.storage().instance().get(&StorageKey::AdminList);
+        let admin_list: Option<Vec<Address>> = env.storage().instance().get(&StorageKey::AdminList);
         if let Some(admins) = admin_list {
             if !admins.is_empty() {
                 for i in 0..admins.len() {
@@ -2952,15 +2950,18 @@ impl RoyaltySplitter {
                 return false;
             }
         }
-        if let Some(admin) = env.storage().instance().get::<StorageKey, Address>(&StorageKey::Admin) {
+        if let Some(admin) = env
+            .storage()
+            .instance()
+            .get::<StorageKey, Address>(&StorageKey::Admin)
+        {
             return admin == *signer;
         }
         false
     }
 
     fn get_current_threshold(env: &Env) -> u32 {
-        let admin_list: Option<Vec<Address>> =
-            env.storage().instance().get(&StorageKey::AdminList);
+        let admin_list: Option<Vec<Address>> = env.storage().instance().get(&StorageKey::AdminList);
         if let Some(admins) = admin_list {
             if !admins.is_empty() {
                 return env
@@ -2973,15 +2974,20 @@ impl RoyaltySplitter {
         1
     }
 
-    fn execute_sensitive_operation(env: &Env, operation: &SensitiveOperation) -> Result<(), ContractError> {
+    fn execute_sensitive_operation(
+        env: &Env,
+        operation: &SensitiveOperation,
+    ) -> Result<(), ContractError> {
         match operation {
             SensitiveOperation::Pause => {
                 storage::instance_set(env, &StorageKey::Paused, &true);
-                env.events().publish((symbol_short!("royalty"), symbol_short!("paused")), ());
+                env.events()
+                    .publish((symbol_short!("royalty"), symbol_short!("paused")), ());
             }
             SensitiveOperation::Unpause => {
                 storage::instance_set(env, &StorageKey::Paused, &false);
-                env.events().publish((symbol_short!("royalty"), symbol_short!("unpaused")), ());
+                env.events()
+                    .publish((symbol_short!("royalty"), symbol_short!("unpaused")), ());
             }
             SensitiveOperation::PauseOperation(op) => {
                 match op {
@@ -2992,7 +2998,10 @@ impl RoyaltySplitter {
                         storage::instance_set(env, &StorageKey::PausedSecondary, &true);
                     }
                 }
-                env.events().publish((symbol_short!("royalty"), symbol_short!("op_paused")), *op as u32);
+                env.events().publish(
+                    (symbol_short!("royalty"), symbol_short!("op_paused")),
+                    *op as u32,
+                );
             }
             SensitiveOperation::UnpauseOperation(op) => {
                 match op {
@@ -3003,20 +3012,30 @@ impl RoyaltySplitter {
                         storage::instance_set(env, &StorageKey::PausedSecondary, &false);
                     }
                 }
-                env.events().publish((symbol_short!("royalty"), symbol_short!("op_unpaus")), *op as u32);
+                env.events().publish(
+                    (symbol_short!("royalty"), symbol_short!("op_unpaus")),
+                    *op as u32,
+                );
             }
             SensitiveOperation::TransferAdmin(new_admin) => {
                 storage::instance_set(env, &StorageKey::Admin, new_admin);
-                env.events().publish((symbol_short!("royalty"), symbol_short!("adm_trf")), new_admin.clone());
+                env.events().publish(
+                    (symbol_short!("royalty"), symbol_short!("adm_trf")),
+                    new_admin.clone(),
+                );
             }
             SensitiveOperation::SetRoyaltyRate(new_rate) => {
                 if *new_rate > 10_000 {
                     return Err(ContractError::RoyaltyRateTooHigh);
                 }
-                let old_rate: u32 = storage::instance_get::<u32>(env, &StorageKey::RoyaltyRate).unwrap_or(0);
+                let old_rate: u32 =
+                    storage::instance_get::<u32>(env, &StorageKey::RoyaltyRate).unwrap_or(0);
                 storage::instance_set(env, &StorageKey::RoyaltyRate, new_rate);
                 let now = env.ledger().timestamp();
-                let caller = env.storage().instance().get::<StorageKey, Address>(&StorageKey::Admin)
+                let caller = env
+                    .storage()
+                    .instance()
+                    .get::<StorageKey, Address>(&StorageKey::Admin)
                     .unwrap_or(env.current_contract_address());
                 let entry = RoyaltyRateChange {
                     old_rate,
@@ -3024,29 +3043,43 @@ impl RoyaltySplitter {
                     timestamp: now,
                     caller,
                 };
-                let mut history: Vec<RoyaltyRateChange> = storage::persistent_get(env, &StorageKey::RoyaltyRateHistory)
-                    .unwrap_or(Vec::new(env));
+                let mut history: Vec<RoyaltyRateChange> =
+                    storage::persistent_get(env, &StorageKey::RoyaltyRateHistory)
+                        .unwrap_or(Vec::new(env));
                 if history.len() >= RATE_HISTORY_CAP {
                     history.pop_front();
                 }
                 history.push_back(entry);
                 storage::persistent_set(env, &StorageKey::RoyaltyRateHistory, &history);
-                env.events().publish((symbol_short!("royalty"), symbol_short!("rate_set")), (old_rate, *new_rate));
+                env.events().publish(
+                    (symbol_short!("royalty"), symbol_short!("rate_set")),
+                    (old_rate, *new_rate),
+                );
             }
             SensitiveOperation::SetAnomalyThreshold(new_threshold) => {
                 if *new_threshold < 0 {
                     return Err(ContractError::InvalidAnomalyThreshold);
                 }
                 storage::instance_set(env, &StorageKey::AnomalyThreshold, new_threshold);
-                env.events().publish((symbol_short!("royalty"), symbol_short!("anom_set")), *new_threshold);
+                env.events().publish(
+                    (symbol_short!("royalty"), symbol_short!("anom_set")),
+                    *new_threshold,
+                );
             }
             SensitiveOperation::SetIncentivesEnabled(enabled) => {
                 storage::instance_set(env, &StorageKey::IncentivesEnabled, enabled);
-                env.events().publish((symbol_short!("royalty"), symbol_short!("incn_set")), *enabled);
+                env.events().publish(
+                    (symbol_short!("royalty"), symbol_short!("incn_set")),
+                    *enabled,
+                );
             }
             SensitiveOperation::UpdateWasm(wasm_hash) => {
-                env.deployer().update_current_contract_wasm(wasm_hash.clone());
-                env.events().publish((symbol_short!("royalty"), symbol_short!("upgraded")), wasm_hash.clone());
+                env.deployer()
+                    .update_current_contract_wasm(wasm_hash.clone());
+                env.events().publish(
+                    (symbol_short!("royalty"), symbol_short!("upgraded")),
+                    wasm_hash.clone(),
+                );
             }
             SensitiveOperation::SetApprovedTokens(tokens) => {
                 if tokens.len() > MAX_APPROVED_TOKENS {
@@ -3063,7 +3096,10 @@ impl RoyaltySplitter {
                     seen.push_back(tok);
                 }
                 storage::persistent_set(env, &StorageKey::ApprovedTokens, tokens);
-                env.events().publish((symbol_short!("royalty"), symbol_short!("toks_set")), tokens.len());
+                env.events().publish(
+                    (symbol_short!("royalty"), symbol_short!("toks_set")),
+                    tokens.len(),
+                );
             }
         }
         Ok(())
@@ -3147,17 +3183,27 @@ impl RoyaltySplitter {
             );
         }
 
-        let mut proposals: Map<u64, OperationProposal> =
-            storage::persistent_get::<Map<u64, OperationProposal>>(&env, &StorageKey::OperationProposals)
-                .unwrap_or(Map::new(&env));
+        let mut proposals: Map<u64, OperationProposal> = storage::persistent_get::<
+            Map<u64, OperationProposal>,
+        >(
+            &env, &StorageKey::OperationProposals
+        )
+        .unwrap_or(Map::new(&env));
         proposals.set(id, proposal);
         storage::persistent_set(&env, &StorageKey::OperationProposals, &proposals);
 
         let mut all_approvals: Map<u64, Vec<Address>> =
-            storage::persistent_get::<Map<u64, Vec<Address>>>(&env, &StorageKey::OperationProposalApprovals)
-                .unwrap_or(Map::new(&env));
+            storage::persistent_get::<Map<u64, Vec<Address>>>(
+                &env,
+                &StorageKey::OperationProposalApprovals,
+            )
+            .unwrap_or(Map::new(&env));
         all_approvals.set(id, approvals);
-        storage::persistent_set(&env, &StorageKey::OperationProposalApprovals, &all_approvals);
+        storage::persistent_set(
+            &env,
+            &StorageKey::OperationProposalApprovals,
+            &all_approvals,
+        );
 
         storage::instance_set(&env, &StorageKey::OperationProposalCount, &id);
 
@@ -3182,9 +3228,12 @@ impl RoyaltySplitter {
             return Err(ContractError::UnauthorizedSigner);
         }
 
-        let mut proposals: Map<u64, OperationProposal> =
-            storage::persistent_get::<Map<u64, OperationProposal>>(&env, &StorageKey::OperationProposals)
-                .ok_or(ContractError::ProposalNotFound)?;
+        let mut proposals: Map<u64, OperationProposal> = storage::persistent_get::<
+            Map<u64, OperationProposal>,
+        >(
+            &env, &StorageKey::OperationProposals
+        )
+        .ok_or(ContractError::ProposalNotFound)?;
         let mut proposal = proposals
             .get(proposal_id)
             .ok_or(ContractError::ProposalNotFound)?;
@@ -3199,11 +3248,12 @@ impl RoyaltySplitter {
         }
 
         let mut all_approvals: Map<u64, Vec<Address>> =
-            storage::persistent_get::<Map<u64, Vec<Address>>>(&env, &StorageKey::OperationProposalApprovals)
-                .unwrap_or(Map::new(&env));
-        let mut approvals = all_approvals
-            .get(proposal_id)
-            .unwrap_or(Vec::new(&env));
+            storage::persistent_get::<Map<u64, Vec<Address>>>(
+                &env,
+                &StorageKey::OperationProposalApprovals,
+            )
+            .unwrap_or(Map::new(&env));
+        let mut approvals = all_approvals.get(proposal_id).unwrap_or(Vec::new(&env));
 
         for i in 0..approvals.len() {
             if approvals.get(i).unwrap() == approver {
@@ -3214,7 +3264,11 @@ impl RoyaltySplitter {
         approvals.push_back(approver.clone());
         proposal.approvals_count = proposal.approvals_count.saturating_add(1);
         all_approvals.set(proposal_id, approvals);
-        storage::persistent_set(&env, &StorageKey::OperationProposalApprovals, &all_approvals);
+        storage::persistent_set(
+            &env,
+            &StorageKey::OperationProposalApprovals,
+            &all_approvals,
+        );
 
         let executed = if proposal.approvals_count >= proposal.threshold {
             Self::execute_sensitive_operation(&env, &proposal.operation)?;
@@ -3240,23 +3294,31 @@ impl RoyaltySplitter {
     }
 
     /// Fetches an operation proposal by ID (#894).
-    pub fn get_operation_proposal(env: Env, proposal_id: u64) -> Result<OperationProposal, ContractError> {
+    pub fn get_operation_proposal(
+        env: Env,
+        proposal_id: u64,
+    ) -> Result<OperationProposal, ContractError> {
         storage::extend_instance_ttl(&env);
-        storage::persistent_get::<Map<u64, OperationProposal>>(&env, &StorageKey::OperationProposals)
-            .ok_or(ContractError::ProposalNotFound)?
-            .get(proposal_id)
-            .ok_or(ContractError::ProposalNotFound)
+        storage::persistent_get::<Map<u64, OperationProposal>>(
+            &env,
+            &StorageKey::OperationProposals,
+        )
+        .ok_or(ContractError::ProposalNotFound)?
+        .get(proposal_id)
+        .ok_or(ContractError::ProposalNotFound)
     }
 
     /// Returns all approvers for a given operation proposal (#894).
     pub fn get_operation_proposal_approvals(env: Env, proposal_id: u64) -> Vec<Address> {
         storage::extend_instance_ttl(&env);
-        storage::persistent_get::<Map<u64, Vec<Address>>>(&env, &StorageKey::OperationProposalApprovals)
-            .and_then(|m| m.get(proposal_id))
-            .unwrap_or(Vec::new(&env))
+        storage::persistent_get::<Map<u64, Vec<Address>>>(
+            &env,
+            &StorageKey::OperationProposalApprovals,
+        )
+        .and_then(|m| m.get(proposal_id))
+        .unwrap_or(Vec::new(&env))
     }
 }
-
 
 #[cfg(test)]
 mod contributor_incentive_tests {
@@ -4045,7 +4107,11 @@ mod collaborative_operation_proposal_tests {
     use super::*;
     use soroban_sdk::testutils::{Address as _, Ledger};
 
-    fn setup(env: &Env, n_admins: usize, threshold: u32) -> (Address, Vec<Address>, RoyaltySplitterClient<'_>) {
+    fn setup(
+        env: &Env,
+        n_admins: usize,
+        threshold: u32,
+    ) -> (Address, Vec<Address>, RoyaltySplitterClient<'_>) {
         let contract_id = env.register_contract(None, RoyaltySplitter);
         let client = RoyaltySplitterClient::new(env, &contract_id);
         let collab_a = Address::generate(env);
@@ -4075,7 +4141,8 @@ mod collaborative_operation_proposal_tests {
         let (admin, _, client) = setup(&env, 0, 1);
 
         assert!(!client.is_paused());
-        let prop_id = client.propose_operation(&admin, &SensitiveOperation::Pause, &MIN_PROPOSAL_DURATION);
+        let prop_id =
+            client.propose_operation(&admin, &SensitiveOperation::Pause, &MIN_PROPOSAL_DURATION);
         assert_eq!(prop_id, 1);
         assert!(client.is_paused());
 
@@ -4144,15 +4211,16 @@ mod collaborative_operation_proposal_tests {
         let stranger = Address::generate(&env);
 
         assert_eq!(
-            client.try_propose_operation(&stranger, &SensitiveOperation::Pause, &MIN_PROPOSAL_DURATION),
+            client.try_propose_operation(
+                &stranger,
+                &SensitiveOperation::Pause,
+                &MIN_PROPOSAL_DURATION
+            ),
             Err(Ok(ContractError::UnauthorizedSigner))
         );
 
-        let prop_id = client.propose_operation(
-            &admin1,
-            &SensitiveOperation::Pause,
-            &MIN_PROPOSAL_DURATION,
-        );
+        let prop_id =
+            client.propose_operation(&admin1, &SensitiveOperation::Pause, &MIN_PROPOSAL_DURATION);
 
         assert_eq!(
             client.try_approve_operation(&stranger, &prop_id),
@@ -4167,11 +4235,8 @@ mod collaborative_operation_proposal_tests {
         let (_, admins, client) = setup(&env, 3, 3);
         let admin1 = admins.get(0).unwrap();
 
-        let prop_id = client.propose_operation(
-            &admin1,
-            &SensitiveOperation::Pause,
-            &MIN_PROPOSAL_DURATION,
-        );
+        let prop_id =
+            client.propose_operation(&admin1, &SensitiveOperation::Pause, &MIN_PROPOSAL_DURATION);
 
         // Admin 1 was auto-recorded on propose, trying to approve again is rejected
         assert_eq!(
@@ -4213,23 +4278,39 @@ mod collaborative_operation_proposal_tests {
         let (admin, _, client) = setup(&env, 0, 1);
 
         assert_eq!(
-            client.try_propose_operation(&admin, &SensitiveOperation::Pause, &(MIN_PROPOSAL_DURATION - 1)),
+            client.try_propose_operation(
+                &admin,
+                &SensitiveOperation::Pause,
+                &(MIN_PROPOSAL_DURATION - 1)
+            ),
             Err(Ok(ContractError::InvalidProposalDuration))
         );
         assert_eq!(
-            client.try_propose_operation(&admin, &SensitiveOperation::Pause, &(MAX_PROPOSAL_DURATION + 1)),
+            client.try_propose_operation(
+                &admin,
+                &SensitiveOperation::Pause,
+                &(MAX_PROPOSAL_DURATION + 1)
+            ),
             Err(Ok(ContractError::InvalidProposalDuration))
         );
 
         // Invalid royalty rate
         assert_eq!(
-            client.try_propose_operation(&admin, &SensitiveOperation::SetRoyaltyRate(10_001), &MIN_PROPOSAL_DURATION),
+            client.try_propose_operation(
+                &admin,
+                &SensitiveOperation::SetRoyaltyRate(10_001),
+                &MIN_PROPOSAL_DURATION
+            ),
             Err(Ok(ContractError::RoyaltyRateTooHigh))
         );
 
         // Invalid anomaly threshold
         assert_eq!(
-            client.try_propose_operation(&admin, &SensitiveOperation::SetAnomalyThreshold(-1), &MIN_PROPOSAL_DURATION),
+            client.try_propose_operation(
+                &admin,
+                &SensitiveOperation::SetAnomalyThreshold(-1),
+                &MIN_PROPOSAL_DURATION
+            ),
             Err(Ok(ContractError::InvalidAnomalyThreshold))
         );
     }
@@ -4249,16 +4330,28 @@ mod collaborative_operation_proposal_tests {
         assert!(!client.is_paused());
 
         // Set incentives
-        client.propose_operation(&admin, &SensitiveOperation::SetIncentivesEnabled(true), &MIN_PROPOSAL_DURATION);
+        client.propose_operation(
+            &admin,
+            &SensitiveOperation::SetIncentivesEnabled(true),
+            &MIN_PROPOSAL_DURATION,
+        );
         assert!(client.is_incentives_enabled());
 
         // Set anomaly threshold
-        client.propose_operation(&admin, &SensitiveOperation::SetAnomalyThreshold(50_000_000), &MIN_PROPOSAL_DURATION);
+        client.propose_operation(
+            &admin,
+            &SensitiveOperation::SetAnomalyThreshold(50_000_000),
+            &MIN_PROPOSAL_DURATION,
+        );
         assert_eq!(client.get_anomaly_threshold(), Some(50_000_000));
 
         // Transfer admin
         let new_admin = Address::generate(&env);
-        client.propose_operation(&admin, &SensitiveOperation::TransferAdmin(new_admin.clone()), &MIN_PROPOSAL_DURATION);
+        client.propose_operation(
+            &admin,
+            &SensitiveOperation::TransferAdmin(new_admin.clone()),
+            &MIN_PROPOSAL_DURATION,
+        );
         assert_eq!(client.get_admin(), new_admin);
     }
 }
