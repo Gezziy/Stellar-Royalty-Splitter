@@ -187,6 +187,11 @@ jobs:
         # Expected to complete in < 120 s on the runner.
         run: cargo test --workspace --locked --features testutils prop_ -- --nocapture
 
+      - name: cargo test — collaborative signing (#894)
+        # Covers proposal creation, authorization, threshold execution,
+        # duplicate-approval prevention, and expiry handling.
+        run: cargo test --workspace --locked --features testutils collaborative_operation_proposal -- --nocapture
+
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
       - name: Run tests
