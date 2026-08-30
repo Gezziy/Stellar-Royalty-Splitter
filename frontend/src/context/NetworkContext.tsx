@@ -1,6 +1,7 @@
 /// <reference types="vite/client" />
 import React, { createContext, useContext, useState, useEffect, useCallback } from "react";
 import { getFreighterNetwork } from "../lib/freighter";
+import { useUIStore } from "../store/uiStore";
 
 export type Network = "testnet" | "mainnet";
 
@@ -92,6 +93,11 @@ export const NetworkProvider: React.FC<{ children: React.ReactNode }> = ({
   }
 
   const networkMismatch = computeNetworkMismatch(walletNetworkName, network);
+
+  useEffect(() => {
+    useUIStore.getState().setWalletNetworkName(walletNetworkName);
+    useUIStore.getState().setNetworkMismatch(networkMismatch);
+  }, [walletNetworkName, networkMismatch]);
 
   return (
     <NetworkContext.Provider
