@@ -1,5 +1,5 @@
 #![cfg(test)]
-use soroban_sdk::{testutils::Address as _, Address, Env, Vec, vec};
+use soroban_sdk::{testutils::Address as _, vec, Address, Env, Vec};
 use stellar_royalty_splitter::{RoyaltySplitter, RoyaltySplitterClient};
 
 #[test]

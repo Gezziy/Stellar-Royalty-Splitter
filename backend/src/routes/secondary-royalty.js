@@ -21,6 +21,7 @@ import {
   validate,
   recordSecondarySaleSchema,
   setRoyaltyRateSchema,
+  setSecondaryPoolLimitSchema,
   distributeSecondarySchema,
   validateContractIdMiddleware,
   parsePagination,
@@ -166,6 +167,32 @@ secondaryRoyaltyRouter.post("/set-rate", validate(setRoyaltyRateSchema), async (
       royaltyRate,
     });
 
+    res.json({ xdr: txXdr, transactionId });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /api/secondary-royalty/set-pool-limit
+ * Body: { contractId, walletAddress, maxPoolSize }
+ */
+secondaryRoyaltyRouter.post("/set-pool-limit", validate(setSecondaryPoolLimitSchema), async (req, res, next) => {
+  try {
+    const { contractId, walletAddress, maxPoolSize } = req.body;
+    const transactionId = recordTransaction(
+      contractId,
+      "secondary_pool_limit",
+      walletAddress,
+      { maxPoolSize: maxPoolSize.toString() },
+    );
+    const txXdr = await buildTx(walletAddress, contractId, "set_max_secondary_pool_size", [
+      i128ToScVal(maxPoolSize),
+    ]);
+    addAuditLog(contractId, "secondary_pool_limit_set", walletAddress, {
+      transactionId,
+      maxPoolSize: maxPoolSize.toString(),
+    });
     res.json({ xdr: txXdr, transactionId });
   } catch (err) {
     next(err);
