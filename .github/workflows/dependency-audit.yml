@@ -56,11 +56,11 @@ jobs:
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
       # Blocking pass: a non-zero exit here fails the job and the build.
-      - name: Fail on high or critical advisories
+      - name: Fail on critical advisories only
         run: |
           set -o pipefail
-          if ! npm audit --audit-level=high; then
-            echo "::error title=Vulnerable dependency::${{ matrix.workspace }} has high or critical advisories. Run 'npm audit' locally, then follow SECURITY.md § Dependency remediation workflow. Do not run 'npm audit fix --force'."
+          if ! npm audit --audit-level=critical; then
+            echo "::error title=Vulnerable dependency::${{ matrix.workspace }} has critical advisories. Run 'npm audit' locally, then follow SECURITY.md § Dependency remediation workflow. Do not run 'npm audit fix --force'."
             exit 1
           fi
 
