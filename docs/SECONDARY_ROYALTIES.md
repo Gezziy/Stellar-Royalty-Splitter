@@ -268,12 +268,19 @@ pub fn get_royalty_rate(env: Env) -> u32
 // Record a resale and accumulate royalties
 pub fn record_secondary_royalty(env: Env, sale_price: i128) -> i128
 
+// Get and administer the capped secondary royalty pool
+pub fn get_secondary_royalty_pool(env: Env) -> i128
+pub fn get_max_secondary_pool_size(env: Env) -> i128
+pub fn set_max_secondary_pool_size(env: Env, new_limit: i128)
+
 // Distribute accumulated royalties among collaborators
 pub fn distribute_secondary_royalties(env: Env, token: Address)
-
-// Get accumulated secondary royalties
-pub fn get_secondary_royalty_pool(env: Env) -> i128
 ```
+
+The pool defaults to `MAX_SECONDARY_POOL_SIZE` (1 trillion stroops). Deposits
+that would exceed the configured limit are rejected. A `pool_warn` event is
+emitted when the pool exceeds 80% of its limit. The admin can raise the limit
+through `POST /api/secondary-royalty/set-pool-limit`.
 
 ---
 
@@ -449,6 +456,7 @@ Tests verify:
 - Pool accumulation across multiple sales
 - Correct distribution according to primary shares
 - Pool reset after distribution
+- Deposits at and above the configured pool limit
 
 ---
 

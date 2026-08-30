@@ -105,6 +105,12 @@ export const setRoyaltyRateSchema = z.object({
   royaltyRate: basisPoints,
 });
 
+export const setSecondaryPoolLimitSchema = z.object({
+  contractId: contractAddress,
+  walletAddress: stellarAddress,
+  maxPoolSize: z.number().int().positive(),
+});
+
 export const recordSecondarySaleSchema = z.object({
   contractId: contractAddress,
   walletAddress: stellarAddress,
@@ -486,3 +492,12 @@ export function parseCursorPagination(query, res, defaultLimit = 50, maxLimit = 
 export function encodeCursor(timestamp, id) {
   return Buffer.from(JSON.stringify({ timestamp, id })).toString("base64");
 }
+
+// ── Request Complexity Budgeting (#892) ──────────────────────────────────────
+export {
+  calculateComplexity,
+  DEFAULT_COMPLEXITY_LIMIT,
+  DEFAULT_COMPLEXITY_METHODS,
+  getComplexityLimit,
+  requestComplexityMiddleware,
+} from "./request-complexity.js";

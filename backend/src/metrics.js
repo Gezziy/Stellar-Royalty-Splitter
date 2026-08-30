@@ -17,6 +17,10 @@ const metrics = {
   healthCheckSorobanResponseTimeMs: 0,
   healthCheckCacheResponseTimeMs: 0,
   healthCheckTotal: 0,
+  // RPC retry tracking (transient-failure retry strategy)
+  rpcRetryAttempts: 0,
+  rpcRetrySuccesses: 0,
+  rpcRetryExhausted: 0,
   // Connection health monitoring (#496)
   connectionHealthTotalChecks: 0,
   connectionHealthTotalFailures: 0,
@@ -101,6 +105,28 @@ const rateLimitHits = new client.Counter({
 const activeConnections = new client.Gauge({
   name: "stellar_active_connections",
   help: "Number of active database connections",
+  registers: [register],
+});
+
+// RPC retry tracking (centralized transient-failure retry strategy)
+const rpcRetryAttempts = new client.Counter({
+  name: "stellar_rpc_retries_total",
+  help: "Total RPC retry attempts executed after a transient failure",
+  labelNames: ["operationType"],
+  registers: [register],
+});
+
+const rpcRetrySuccesses = new client.Counter({
+  name: "stellar_rpc_retry_successes_total",
+  help: "Total RPC operations that succeeded after at least one retry",
+  labelNames: ["operationType"],
+  registers: [register],
+});
+
+const rpcRetryExhausted = new client.Counter({
+  name: "stellar_rpc_retry_exhausted_total",
+  help: "Total RPC operations that failed after exhausting all retries",
+  labelNames: ["operationType"],
   registers: [register],
 });
 
@@ -393,6 +419,31 @@ export function recordHorizonResponseTime(durationMs) {
   metrics.horizonResponseTimeCount += 1;
 }
 
+/**
+ * Record an RPC retry outcome from the centralized retry strategy
+ * (see rpc-retry.js). `outcome` is one of:
+ *   - "attempt":   a retry attempt is about to be executed
+ *   - "success":   the operation succeeded after at least one retry
+ *   - "exhausted": the operation failed after exhausting all retries
+ *
+ * Retry count and success rate are observable at /api/metrics as
+ * `stellar_rpc_retries_total`, `stellar_rpc_retry_successes_total`,
+ * `stellar_rpc_retry_exhausted_total` (labeled by operationType).
+ */
+export function recordRpcRetry(operationType, outcome) {
+  const label = { operationType: typeof operationType === "string" && operationType ? operationType : "unknown" };
+  if (outcome === "attempt") {
+    metrics.rpcRetryAttempts += 1;
+    rpcRetryAttempts.inc(label);
+  } else if (outcome === "success") {
+    metrics.rpcRetrySuccesses += 1;
+    rpcRetrySuccesses.inc(label);
+  } else if (outcome === "exhausted") {
+    metrics.rpcRetryExhausted += 1;
+    rpcRetryExhausted.inc(label);
+  }
+}
+
 export function getMetricsSnapshot() {
   const averageHorizonResponseTimeMs =
     metrics.horizonResponseTimeCount === 0
@@ -405,6 +456,15 @@ export function getMetricsSnapshot() {
   };
 }
 
+/**
+ * Serialize all metrics (prom-client registry + legacy counters) to the
+ * Prometheus text format.
+ *
+ * Async because prom-client's `register.metrics()` returns a Promise — an
+ * earlier revision concatenated that Promise directly, silently shipping
+ * "[object Promise]" instead of the registry metrics to /api/metrics and the
+ * pushgateway.
+ */
 export async function prometheusMetrics() {
   const snapshot = getMetricsSnapshot();
   const legacyMetrics = [
@@ -425,6 +485,16 @@ export async function prometheusMetrics() {
     "# HELP stellar_horizon_response_time_count Horizon response time observations.",
     "# TYPE stellar_horizon_response_time_count counter",
     `stellar_horizon_response_time_count ${snapshot.horizonResponseTimeCount}`,
+    // RPC retry tracking (transient-failure retry strategy)
+    "# HELP stellar_rpc_retry_attempts_total Total RPC retry attempts executed after a transient failure.",
+    "# TYPE stellar_rpc_retry_attempts_total counter",
+    `stellar_rpc_retry_attempts_total ${snapshot.rpcRetryAttempts}`,
+    "# HELP stellar_rpc_retry_successes_total Total RPC operations that succeeded after at least one retry.",
+    "# TYPE stellar_rpc_retry_successes_total counter",
+    `stellar_rpc_retry_successes_total ${snapshot.rpcRetrySuccesses}`,
+    "# HELP stellar_rpc_retry_exhausted_total Total RPC operations that failed after exhausting all retries.",
+    "# TYPE stellar_rpc_retry_exhausted_total counter",
+    `stellar_rpc_retry_exhausted_total ${snapshot.rpcRetryExhausted}`,
     "# HELP stellar_oversized_requests_rejected_total Requests rejected due to body size exceeding the limit.",
     "# TYPE stellar_oversized_requests_rejected_total counter",
     `stellar_oversized_requests_rejected_total ${snapshot.oversizedRequestsRejectedTotal}`,
@@ -474,7 +544,8 @@ export async function prometheusMetrics() {
     "",
   ].join("\n");
 
-  return (await register.metrics()) + "\n" + legacyMetrics;
+  const registryText = await register.metrics();
+  return registryText + "\n" + legacyMetrics;
 }
 
 export function recordConnectionHealthCheck(m) {
@@ -496,6 +567,9 @@ export function resetMetrics() {
   metrics.horizonResponseTimeCount = 0;
   metrics.oversizedRequestsRejectedTotal = 0;
   metrics.dosRateLimitedTotal = 0;
+  metrics.rpcRetryAttempts = 0;
+  metrics.rpcRetrySuccesses = 0;
+  metrics.rpcRetryExhausted = 0;
   metrics.healthCheckDatabaseResponseTimeMs = 0;
   metrics.healthCheckHorizonResponseTimeMs = 0;
   metrics.healthCheckSorobanResponseTimeMs = 0;
