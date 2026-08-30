@@ -318,21 +318,48 @@ impl RoyaltySplitter {
             .ok_or(ContractError::NoShareMap)
     }
 
-    fn checked_add_share_total(env: &Env, total: u32, share: u32) -> Result<u32, ContractError> {
+    fn checked_add_share_total(_env: &Env, total: u32, share: u32) -> Result<u32, ContractError> {
         total
             .checked_add(share)
             .ok_or(ContractError::ArithmeticOverflow)
     }
 
-    fn checked_bps_amount(env: &Env, amount: i128, bps: u32) -> Result<i128, ContractError> {
+    /// Calculates the basis point share of an amount safely without intermediate overflow.
+    ///
+    /// # Mathematical Invariants & Bounds:
+    /// - For any `amount` in `0..=i128::MAX` and any `bps` in `0..=10_000`:
+    ///   Decomposes `amount = q * 10_000 + r`, where:
+    ///     `q = amount / 10_000` (quotient)
+    ///     `r = amount % 10_000` (remainder, `0 <= r < 10_000`)
+    ///   Then:
+    ///     `floor(amount * bps / 10_000) = q * bps + floor(r * bps / 10_000)`
+    /// - Range bounds:
+    ///   - `q * bps <= (i128::MAX / 10_000) * 10_000 <= i128::MAX`
+    ///   - `r * bps < 10_000 * 10_000 = 100_000_000 < u128::MAX`
+    ///   - `term1 + term2 <= amount <= i128::MAX`
+    /// - Guarantees zero intermediate overflow for all non-negative `i128` values up to `i128::MAX`.
+    /// - Returns `Err(ContractError::ArithmeticOverflow)` for negative amounts or if `bps` causes the result to exceed `i128::MAX`.
+    fn checked_bps_amount(_env: &Env, amount: i128, bps: u32) -> Result<i128, ContractError> {
         if amount < 0 {
             return Err(ContractError::ArithmeticOverflow);
         }
 
-        let numerator = (amount as u128)
-            .checked_mul(bps as u128)
+        let u_amount = amount as u128;
+        let u_bps = bps as u128;
+        let q = u_amount / 10_000;
+        let r = u_amount % 10_000;
+
+        let term1 = q
+            .checked_mul(u_bps)
             .ok_or(ContractError::ArithmeticOverflow)?;
-        let result = numerator / 10_000;
+        let term2 = (r
+            .checked_mul(u_bps)
+            .ok_or(ContractError::ArithmeticOverflow)?)
+            / 10_000;
+
+        let result = term1
+            .checked_add(term2)
+            .ok_or(ContractError::ArithmeticOverflow)?;
         if result > i128::MAX as u128 {
             return Err(ContractError::ArithmeticOverflow);
         }
@@ -3324,5 +3351,107 @@ mod multisig_admin_tests {
         client.pause();
         assert!(client.is_paused());
         client.unpause();
+    }
+}
+
+#[cfg(test)]
+mod basis_point_overflow_tests {
+    use super::*;
+    use soroban_sdk::testutils::Address as _;
+
+    #[test]
+    fn test_checked_bps_amount_zero_and_small_values() {
+        let env = Env::default();
+
+        // 0 amount with various bps values
+        assert_eq!(RoyaltySplitter::checked_bps_amount(&env, 0, 0).unwrap(), 0);
+        assert_eq!(RoyaltySplitter::checked_bps_amount(&env, 0, 1).unwrap(), 0);
+        assert_eq!(RoyaltySplitter::checked_bps_amount(&env, 0, 5_000).unwrap(), 0);
+        assert_eq!(RoyaltySplitter::checked_bps_amount(&env, 0, 10_000).unwrap(), 0);
+
+        // Small amounts
+        assert_eq!(RoyaltySplitter::checked_bps_amount(&env, 1, 0).unwrap(), 0);
+        assert_eq!(RoyaltySplitter::checked_bps_amount(&env, 1, 5_000).unwrap(), 0);
+        assert_eq!(RoyaltySplitter::checked_bps_amount(&env, 1, 9_999).unwrap(), 0);
+        assert_eq!(RoyaltySplitter::checked_bps_amount(&env, 1, 10_000).unwrap(), 1);
+
+        // Boundary rounding steps
+        assert_eq!(RoyaltySplitter::checked_bps_amount(&env, 9_999, 10_000).unwrap(), 9_999);
+        assert_eq!(RoyaltySplitter::checked_bps_amount(&env, 9_999, 5_000).unwrap(), 4_999);
+        assert_eq!(RoyaltySplitter::checked_bps_amount(&env, 10_000, 5_000).unwrap(), 5_000);
+        assert_eq!(RoyaltySplitter::checked_bps_amount(&env, 10_001, 5_000).unwrap(), 5_000);
+        assert_eq!(RoyaltySplitter::checked_bps_amount(&env, 10_002, 5_000).unwrap(), 5_001);
+    }
+
+    #[test]
+    fn test_checked_bps_amount_i128_max_boundaries() {
+        let env = Env::default();
+
+        // i128::MAX with 0 bps
+        assert_eq!(RoyaltySplitter::checked_bps_amount(&env, i128::MAX, 0).unwrap(), 0);
+
+        // i128::MAX with 1 bps (10_000th of i128::MAX)
+        let expected_1bps = (i128::MAX as u128 / 10_000) as i128;
+        assert_eq!(
+            RoyaltySplitter::checked_bps_amount(&env, i128::MAX, 1).unwrap(),
+            expected_1bps
+        );
+
+        // i128::MAX with 5_000 bps (50%)
+        let expected_half = i128::MAX / 2;
+        assert_eq!(
+            RoyaltySplitter::checked_bps_amount(&env, i128::MAX, 5_000).unwrap(),
+            expected_half
+        );
+
+        // i128::MAX with 10_000 bps (100%) - must equal exactly i128::MAX without overflow
+        assert_eq!(
+            RoyaltySplitter::checked_bps_amount(&env, i128::MAX, 10_000).unwrap(),
+            i128::MAX
+        );
+    }
+
+    #[test]
+    fn test_checked_bps_amount_negative_and_overflow_cases() {
+        let env = Env::default();
+
+        // Negative amounts fail with ArithmeticOverflow
+        assert_eq!(
+            RoyaltySplitter::checked_bps_amount(&env, -1, 5_000),
+            Err(ContractError::ArithmeticOverflow)
+        );
+        assert_eq!(
+            RoyaltySplitter::checked_bps_amount(&env, i128::MIN, 5_000),
+            Err(ContractError::ArithmeticOverflow)
+        );
+        assert_eq!(
+            RoyaltySplitter::checked_bps_amount(&env, -100, 10_000),
+            Err(ContractError::ArithmeticOverflow)
+        );
+    }
+
+    #[test]
+    fn test_record_secondary_sale_with_i128_max() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, RoyaltySplitter);
+        let client = RoyaltySplitterClient::new(&env, &contract_id);
+        let a = Address::generate(&env);
+        let b = Address::generate(&env);
+
+        client.initialize(
+            &soroban_sdk::Vec::from_array(&env, [a, b]),
+            &soroban_sdk::Vec::from_array(&env, [5_000u32, 5_000u32]),
+        );
+
+        // 100% royalty rate
+        client.set_royalty_rate(&10_000u32);
+        let royalty = client.record_secondary_sale(&i128::MAX);
+        assert_eq!(royalty, i128::MAX);
+
+        // 50% royalty rate
+        client.set_royalty_rate(&5_000u32);
+        let royalty_half = client.record_secondary_sale(&i128::MAX);
+        assert_eq!(royalty_half, i128::MAX / 2);
     }
 }
