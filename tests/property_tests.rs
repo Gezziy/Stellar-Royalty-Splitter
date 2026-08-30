@@ -101,6 +101,10 @@ fn shares_summing_to_10000(n: usize) -> impl Strategy<Value = Vec<u32>> {
 
 // ── Proptest configuration ────────────────────────────────────────────────
 
+fn config_100() -> ProptestConfig {
+    ProptestConfig { cases: 100, ..ProptestConfig::default() }
+}
+
 fn config_1000() -> ProptestConfig {
     ProptestConfig { cases: 1_000, ..ProptestConfig::default() }
 }
@@ -820,3 +824,124 @@ fn test_edge_cases_0_max_and_1_to_100_collaborators() {
         }
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// §6  Re-entrancy Resistance & State Transition Invariants (#837)
+// ═══════════════════════════════════════════════════════════════════════════
+
+proptest! {
+    #![proptest_config(config_100())]
+
+    /// Invariant: DistributeHistory counter strictly increments by 1 per distribution
+    /// and contract balance is drained to 0 in one atomic step. Subsequent distribution
+    /// without new funding immediately fails with Underfunded and preserves the counter.
+    #[test]
+    fn prop_distribute_history_monotonicity(
+        amount in 100i128..=1_000_000_000_000i128,
+        cycles in 1usize..=5usize,
+    ) {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (contract_id, client) = setup(&env);
+        let a = Address::generate(&env);
+        let b = Address::generate(&env);
+        let token_admin = Address::generate(&env);
+        let token = make_token(&env, &token_admin);
+
+        client.initialize(
+            &vec![&env, a.clone(), b.clone()],
+            &vec![&env, 6_000u32, 4_000u32],
+        );
+
+        prop_assert_eq!(client.get_distribute_count(), 0);
+
+        for c in 1..=cycles {
+            mint(&env, &token, &contract_id, amount);
+            client.distribute(&token);
+
+            prop_assert_eq!(client.get_distribute_count(), c as u64);
+
+            let rem = soroban_sdk::token::Client::new(&env, &token).balance(&contract_id);
+            prop_assert_eq!(rem, 0i128);
+
+            // Immediate re-distribution attempt fails without changing distribute count
+            let res = client.try_distribute(&token);
+            prop_assert_eq!(res, Err(Ok(ContractError::Underfunded)));
+            prop_assert_eq!(client.get_distribute_count(), c as u64);
+        }
+    }
+
+    /// Invariant: SecondaryPool is zeroed atomically prior to token payouts;
+    /// subsequent distribution calls fail with NoSecondaryRoyalties preventing double-drain.
+    #[test]
+    fn prop_secondary_pool_zeroed_atomic_transition(
+        royalty_amount in 100i128..=1_000_000_000i128,
+    ) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, client) = setup(&env);
+        let a = Address::generate(&env);
+        let b = Address::generate(&env);
+        let token_admin = Address::generate(&env);
+        let token = make_token(&env, &token_admin);
+        let payer = Address::generate(&env);
+
+        client.initialize(
+            &vec![&env, a.clone(), b.clone()],
+            &vec![&env, 5_000u32, 5_000u32],
+        );
+
+        mint(&env, &token, &payer, royalty_amount);
+        soroban_sdk::token::Client::new(&env, &token).approve(&payer, &contract_id, &royalty_amount, &200_000);
+
+        client.record_secondary_royalty(&token, &payer, &royalty_amount);
+        prop_assert_eq!(client.get_secondary_pool(), royalty_amount);
+
+        client.distribute_secondary();
+
+        // Secondary pool is strictly 0
+        prop_assert_eq!(client.get_secondary_pool(), 0);
+
+        // Immediate subsequent call must fail with NoSecondaryRoyalties (no double drain)
+        let res = client.try_distribute_secondary();
+        prop_assert_eq!(res, Err(Ok(ContractError::NoSecondaryRoyalties)));
+    }
+
+    /// Invariant: Batch distribution across m tokens atomically increments history count
+    /// by m and fully drains each token balance to 0 without cross-token state leakage.
+    #[test]
+    fn prop_batch_distribute_multi_token_invariants(
+        amount in 100i128..=10_000_000i128,
+        num_tokens in 1usize..=3usize,
+    ) {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (contract_id, client) = setup(&env);
+        let a = Address::generate(&env);
+        let b = Address::generate(&env);
+
+        client.initialize(
+            &vec![&env, a.clone(), b.clone()],
+            &vec![&env, 5_000u32, 5_000u32],
+        );
+
+        let mut token_addrs = soroban_sdk::Vec::new(&env);
+        for _ in 0..num_tokens {
+            let token_admin = Address::generate(&env);
+            let token = make_token(&env, &token_admin);
+            mint(&env, &token, &contract_id, amount);
+            token_addrs.push_back(token);
+        }
+
+        let initial_count = client.get_distribute_count();
+        client.batch_distribute(&token_addrs);
+
+        prop_assert_eq!(client.get_distribute_count(), initial_count + num_tokens as u64);
+
+        for t in token_addrs.iter() {
+            let rem = soroban_sdk::token::Client::new(&env, &t).balance(&contract_id);
+            prop_assert_eq!(rem, 0i128);
+        }
+    }
+}
+

@@ -994,19 +994,16 @@ impl RoyaltySplitter {
                 .ok_or(ContractError::ArithmeticOverflow)?,
         ));
 
-        for (addr, payout) in payouts.iter() {
-            token_client.transfer(&env.current_contract_address(), &addr, &payout);
-            env.events().publish(
-                (symbol_short!("royalty"), symbol_short!("dist")),
-                (addr, payout, token.clone(), symbol_short!("primary")),
-            );
-        }
-
-        env.events().publish(
-            (symbol_short!("royalty"), symbol_short!("dist_all")),
-            (token, amount),
-        );
-
+        // ── Checks-Effects-Interactions (CEI) Pattern ─────────────────────────
+        // In Soroban's execution model, contracts execute synchronously in isolated
+        // WebAssembly guest environments. While the Soroban host manages call frames
+        // and standard Stellar Asset Contracts (SAC) do not perform arbitrary recipient
+        // callbacks, adhering strictly to the Checks-Effects-Interactions (CEI) pattern
+        // provides robust defense-in-depth against re-entrancy, cross-contract callback
+        // anomalies, and state inconsistency.
+        //
+        // Storage state (Effects: LastDistribution timestamp, DistributeHistory counter)
+        // is committed BEFORE initiating any external token transfers (Interactions).
         storage::instance_set(
             &env,
             &StorageKey::LastDistribution,
@@ -1021,6 +1018,19 @@ impl RoyaltySplitter {
 
         let new_count = current_count.saturating_add(1);
         storage::instance_set(&env, &StorageKey::DistributeHistory, &new_count);
+
+        for (addr, payout) in payouts.iter() {
+            token_client.transfer(&env.current_contract_address(), &addr, &payout);
+            env.events().publish(
+                (symbol_short!("royalty"), symbol_short!("dist")),
+                (addr, payout, token.clone(), symbol_short!("primary")),
+            );
+        }
+
+        env.events().publish(
+            (symbol_short!("royalty"), symbol_short!("dist_all")),
+            (token, amount),
+        );
         Ok(())
     }
 
@@ -1238,6 +1248,24 @@ impl RoyaltySplitter {
 
         let n = recipients_to_use.len();
 
+        // ── Checks-Effects-Interactions (CEI) Pattern ─────────────────────────
+        // State updates (Effects: LastDistribution timestamp and DistributeHistory counter)
+        // are committed BEFORE external token transfers (Interactions).
+        storage::instance_set(
+            &env,
+            &StorageKey::LastDistribution,
+            &env.ledger().timestamp(),
+        );
+
+        let current_count: u64 = env
+            .storage()
+            .instance()
+            .get(&StorageKey::DistributeHistory)
+            .unwrap_or(0);
+
+        let new_count = current_count.saturating_add(tokens.len() as u64);
+        storage::instance_set(&env, &StorageKey::DistributeHistory, &new_count);
+
         for token in tokens.iter() {
             let token_client = token::Client::new(&env, &token);
             let amount = token_client.balance(&env.current_contract_address());
@@ -1287,21 +1315,6 @@ impl RoyaltySplitter {
                 (token.clone(), amount),
             );
         }
-
-        storage::instance_set(
-            &env,
-            &StorageKey::LastDistribution,
-            &env.ledger().timestamp(),
-        );
-
-        let current_count: u64 = env
-            .storage()
-            .instance()
-            .get(&StorageKey::DistributeHistory)
-            .unwrap_or(0);
-
-        let new_count = current_count.saturating_add(tokens.len() as u64);
-        storage::instance_set(&env, &StorageKey::DistributeHistory, &new_count);
 
         env.events().publish(
             (symbol_short!("royalty"), symbol_short!("batch")),
@@ -1429,6 +1442,18 @@ impl RoyaltySplitter {
                 .ok_or(ContractError::ArithmeticOverflow)?,
         ));
 
+        // ── Checks-Effects-Interactions (CEI) Pattern ─────────────────────────
+        // State updates (Effects: resetting SecondaryPool and updating LastSecondaryDistribution)
+        // are committed BEFORE performing external token transfers (Interactions).
+        // This guarantees the secondary royalty pool cannot be double-drained or observed
+        // in a stale non-zero state.
+        storage::instance_set(&env, &StorageKey::SecondaryPool, &0_i128);
+        storage::instance_set(
+            &env,
+            &StorageKey::LastSecondaryDistribution,
+            &env.ledger().timestamp(),
+        );
+
         for (addr, payout) in payouts.iter() {
             token_client.transfer(&env.current_contract_address(), &addr, &payout);
             env.events().publish(
@@ -1437,17 +1462,9 @@ impl RoyaltySplitter {
             );
         }
 
-        storage::instance_set(&env, &StorageKey::SecondaryPool, &0_i128);
-
         env.events().publish(
             (symbol_short!("royalty"), symbol_short!("sec_dist")),
             (token, pool),
-        );
-
-        storage::instance_set(
-            &env,
-            &StorageKey::LastSecondaryDistribution,
-            &env.ledger().timestamp(),
         );
         Ok(())
     }
@@ -1836,19 +1853,9 @@ impl RoyaltySplitter {
                 .ok_or(ContractError::ArithmeticOverflow)?,
         ));
 
-        for (addr, payout) in payouts.iter() {
-            token_client.transfer(&env.current_contract_address(), &addr, &payout);
-            env.events().publish(
-                (symbol_short!("royalty"), symbol_short!("dist")),
-                (addr, payout, token.clone(), symbol_short!("primary")),
-            );
-        }
-
-        env.events().publish(
-            (symbol_short!("royalty"), symbol_short!("dist_all")),
-            (token, amount),
-        );
-
+        // ── Checks-Effects-Interactions (CEI) Pattern ─────────────────────────
+        // State updates (Effects: LastDistribution timestamp and DistributeHistory counter)
+        // are committed BEFORE external token transfers (Interactions).
         storage::instance_set(
             &env,
             &StorageKey::LastDistribution,
@@ -1864,6 +1871,19 @@ impl RoyaltySplitter {
             &env,
             &StorageKey::DistributeHistory,
             &current_count.saturating_add(1),
+        );
+
+        for (addr, payout) in payouts.iter() {
+            token_client.transfer(&env.current_contract_address(), &addr, &payout);
+            env.events().publish(
+                (symbol_short!("royalty"), symbol_short!("dist")),
+                (addr, payout, token.clone(), symbol_short!("primary")),
+            );
+        }
+
+        env.events().publish(
+            (symbol_short!("royalty"), symbol_short!("dist_all")),
+            (token, amount),
         );
         Ok(())
     }
@@ -3455,3 +3475,125 @@ mod basis_point_overflow_tests {
         assert_eq!(royalty_half, i128::MAX / 2);
     }
 }
+
+#[cfg(test)]
+mod reentrancy_tests {
+    use super::*;
+    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::token::Client as TokenClient;
+    use soroban_sdk::token::StellarAssetClient;
+
+    fn setup(env: &Env) -> (Address, RoyaltySplitterClient<'_>, Address, Address, Address) {
+        let contract_id = env.register_contract(None, RoyaltySplitter);
+        let client = RoyaltySplitterClient::new(env, &contract_id);
+        let a = Address::generate(env);
+        let b = Address::generate(env);
+        let token_admin = Address::generate(env);
+        let token = env.register_stellar_asset_contract(token_admin.clone());
+
+        client.initialize(
+            &soroban_sdk::Vec::from_array(env, [a.clone(), b.clone()]),
+            &soroban_sdk::Vec::from_array(env, [6_000u32, 4_000u32]),
+        );
+
+        (contract_id, client, a, b, token)
+    }
+
+    #[test]
+    fn test_distribute_updates_storage_state_and_history() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (contract_id, client, a, b, token) = setup(&env);
+
+        // Mint 1 000 stroops to contract
+        StellarAssetClient::new(&env, &token).mint(&contract_id, &1_000);
+
+        assert_eq!(client.get_distribute_count(), 0);
+
+        // Distribute
+        client.distribute(&token);
+
+        // Verify history count strictly incremented (Effects committed)
+        assert_eq!(client.get_distribute_count(), 1);
+
+        // Verify balances transferred
+        let tc = TokenClient::new(&env, &token);
+        assert_eq!(tc.balance(&a), 600);
+        assert_eq!(tc.balance(&b), 400);
+        assert_eq!(tc.balance(&contract_id), 0);
+
+        // Distribute again with no balance must fail with Underfunded without incrementing count
+        assert_eq!(client.try_distribute(&token), Err(Ok(ContractError::Underfunded)));
+        assert_eq!(client.get_distribute_count(), 1);
+    }
+
+    #[test]
+    fn test_secondary_pool_zeroed_pre_transfer_prevents_double_distribution() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, client, a, b, token) = setup(&env);
+        let payer = Address::generate(&env);
+
+        StellarAssetClient::new(&env, &token).mint(&payer, &2_000);
+        TokenClient::new(&env, &token).approve(&payer, &contract_id, &2_000, &200_000);
+
+        // Record secondary royalty
+        client.record_secondary_royalty(&token, &payer, &1_000);
+        assert_eq!(client.get_secondary_pool(), 1_000);
+
+        // Distribute secondary royalties
+        client.distribute_secondary();
+
+        // Secondary pool is strictly 0
+        assert_eq!(client.get_secondary_pool(), 0);
+
+        // Balances received
+        let tc = TokenClient::new(&env, &token);
+        assert_eq!(tc.balance(&a), 600);
+        assert_eq!(tc.balance(&b), 400);
+
+        // Immediate subsequent call must fail with NoSecondaryRoyalties (no double drain)
+        assert_eq!(
+            client.try_distribute_secondary(),
+            Err(Ok(ContractError::NoSecondaryRoyalties))
+        );
+    }
+
+    #[test]
+    fn test_sequential_distributions_monotonic_history() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (contract_id, client, _, _, token) = setup(&env);
+
+        for step in 1..=5 {
+            StellarAssetClient::new(&env, &token).mint(&contract_id, &500);
+            client.distribute(&token);
+            assert_eq!(client.get_distribute_count(), step);
+        }
+    }
+
+    #[test]
+    fn test_batch_distribute_updates_history_atomically() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (contract_id, client, a, b, token1) = setup(&env);
+        let token_admin2 = Address::generate(&env);
+        let token2 = env.register_stellar_asset_contract(token_admin2);
+
+        StellarAssetClient::new(&env, &token1).mint(&contract_id, &1_000);
+        StellarAssetClient::new(&env, &token2).mint(&contract_id, &2_000);
+
+        let tokens = soroban_sdk::Vec::from_array(&env, [token1.clone(), token2.clone()]);
+        client.batch_distribute(&tokens);
+
+        // History count incremented by token count (2)
+        assert_eq!(client.get_distribute_count(), 2);
+
+        let tc1 = TokenClient::new(&env, &token1);
+        let tc2 = TokenClient::new(&env, &token2);
+        assert_eq!(tc1.balance(&a), 600);
+        assert_eq!(tc1.balance(&b), 400);
+        assert_eq!(tc2.balance(&a), 1_200);
+        assert_eq!(tc2.balance(&b), 800);
+    }
+}
