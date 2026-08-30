@@ -14,6 +14,18 @@ pub struct Recipient {
     pub share: u32,
 }
 
+/// Optional descriptive metadata for the royalty-split NFT or project.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NftMetadata {
+    /// Empty string means the field is not supplied.
+    pub artist_name: String,
+    /// Empty string means the field is not supplied.
+    pub project_name: String,
+    /// Empty string means the field is not supplied.
+    pub collection_id: String,
+}
+
 /// One entry in the royalty rate change history (#323).
 #[contracttype]
 #[derive(Clone)]
@@ -159,6 +171,7 @@ pub enum StorageKey {
     MigrationMemo,
     ContributorJoinDate,
     ContributorActivityCount,
+    NftMetadata,
 }
 
 /// Maximum number of rate-change entries kept in history.
@@ -343,6 +356,7 @@ impl RoyaltySplitter {
         env: &Env,
         collaborators: Vec<Address>,
         shares: Vec<u32>,
+        metadata: Option<NftMetadata>,
     ) -> Result<(), ContractError> {
         if collaborators.is_empty() {
             return Err(ContractError::EmptyCollaborators);
@@ -393,6 +407,9 @@ impl RoyaltySplitter {
         storage::instance_set(env, &StorageKey::Admin, &admin);
         storage::persistent_set(env, &StorageKey::Collaborators, &collaborators);
         storage::persistent_set(env, &StorageKey::ShareMap, &share_map);
+        if let Some(metadata) = metadata {
+            storage::persistent_set(env, &StorageKey::NftMetadata, &metadata);
+        }
 
         let version = String::from_str(env, VERSION);
         storage::instance_set(env, &StorageKey::ContractVersion, &version);
@@ -425,7 +442,33 @@ impl RoyaltySplitter {
             auth::msg::INITIALIZE_ADMIN,
         );
 
-        Self::initialize_validated(&env, collaborators, shares)?;
+                Self::initialize_validated(&env, collaborators, shares, None)?;
+        Ok(())
+    }
+
+    /// Initialize the splitter and persist optional NFT/project metadata.
+    pub fn initialize_with_metadata(
+        env: Env,
+        collaborators: Vec<Address>,
+        shares: Vec<u32>,
+        metadata: Option<NftMetadata>,
+    ) -> Result<(), ContractError> {
+        storage::extend_instance_ttl(&env);
+        if env.storage().instance().has(&StorageKey::Admin) {
+            return Err(ContractError::AlreadyInitialized);
+        }
+        if collaborators.is_empty() {
+            return Err(ContractError::EmptyCollaborators);
+        }
+        if collaborators.len() > MAX_COLLABORATORS {
+            return Err(ContractError::TooManyRecipients);
+        }
+        auth::require_admin(
+            &env,
+            &collaborators.get(0).unwrap(),
+            auth::msg::INITIALIZE_ADMIN,
+        );
+        Self::initialize_validated(&env, collaborators, shares, metadata)?;
         Ok(())
     }
 
@@ -492,8 +535,7 @@ impl RoyaltySplitter {
 
         let admin = collaborators.get(0).ok_or(ContractError::EmptyCollaborators)?;
         auth::require_admin(&env, &admin, auth::msg::INITIALIZE_ADMIN);
-        Self::initialize_validated(&env, collaborators, shares)?;
-
+        Self::initialize_validated(&env, collaborators, shares, None)?;
         env.storage().instance().remove(&StorageKey::InitializeCollaboratorsHash);
         env.storage().instance().remove(&StorageKey::InitializeSharesHash);
         env.storage().instance().remove(&StorageKey::InitializeCommitLedger);
@@ -879,6 +921,28 @@ impl RoyaltySplitter {
             (token, amount),
         );
         Ok(())
+    }
+
+    /// Replace optional NFT/project metadata. Passing `None` clears it.
+    pub fn set_nft_metadata(env: Env, metadata: Option<NftMetadata>) -> Result<(), ContractError> {
+        storage::extend_instance_ttl(&env);
+        Self::check_admin_auth(&env, auth::msg::SET_RECIPIENTS_ADMIN);
+        let is_set = metadata.is_some();
+        match metadata {
+            Some(value) => storage::persistent_set(&env, &StorageKey::NftMetadata, &value),
+            None => storage::persistent_remove(&env, &StorageKey::NftMetadata),
+        }
+        env.events().publish(
+            (symbol_short!("royalty"), symbol_short!("meta_set")),
+            is_set,
+        );
+        Ok(())
+    }
+
+    /// Return the configured NFT/project metadata, if present.
+    pub fn get_nft_metadata(env: Env) -> Option<NftMetadata> {
+        storage::extend_instance_ttl(&env);
+        storage::persistent_get::<NftMetadata>(&env, &StorageKey::NftMetadata)
     }
 
     pub fn get_default_recipients(env: Env) -> Vec<Recipient> {
@@ -3326,3 +3390,64 @@ mod multisig_admin_tests {
         client.unpause();
     }
 }
+
+
+#[cfg(test)]
+mod nft_metadata_tests {
+    use super::{NftMetadata, RoyaltySplitter, RoyaltySplitterClient};
+    use soroban_sdk::{testutils::Address as _, Address, Env, String, Vec};
+
+    fn collaborators(env: &Env, admin: &Address, artist: &Address) -> Vec<Address> {
+        Vec::from_array(env, [admin.clone(), artist.clone()])
+    }
+
+    #[test]
+    fn metadata_is_optional_and_round_trips_through_initialization_and_updates() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let artist = Address::generate(&env);
+        let id = env.register_contract(None, RoyaltySplitter);
+        let client = RoyaltySplitterClient::new(&env, &id);
+        let initial = NftMetadata {
+            artist_name: String::from_str(&env, "Ada Artist"),
+            project_name: String::from_str(&env, "Moonlight"),
+            collection_id: String::from_str(&env, ""),
+        };
+
+        client.initialize_with_metadata(
+            &collaborators(&env, &admin, &artist),
+            &Vec::from_array(&env, [6000, 4000]),
+            &Some(initial.clone()),
+        );
+        assert_eq!(client.get_nft_metadata(), Some(initial));
+
+        let updated = NftMetadata {
+            artist_name: String::from_str(&env, ""),
+            project_name: String::from_str(&env, "Moonlight Remastered"),
+            collection_id: String::from_str(&env, "collection-42"),
+        };
+        client.set_nft_metadata(&Some(updated.clone()));
+        assert_eq!(client.get_nft_metadata(), Some(updated));
+
+        client.set_nft_metadata(&None);
+        assert_eq!(client.get_nft_metadata(), None);
+    }
+
+    #[test]
+    fn legacy_initialize_leaves_metadata_unset() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let id = env.register_contract(None, RoyaltySplitter);
+        let client = RoyaltySplitterClient::new(&env, &id);
+        client.initialize(
+            &Vec::from_array(&env, [admin]),
+            &Vec::from_array(&env, [10_000]),
+        );
+        assert_eq!(client.get_nft_metadata(), None);
+    }
+}
+
+#[allow(dead_code)]
+fn _metadata_type_compile_guard(_: Recipient) {}
