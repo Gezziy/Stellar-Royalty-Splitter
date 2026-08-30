@@ -370,6 +370,65 @@ impl RoyaltySplitter {
         Ok(result as i128)
     }
 
+    /// Resolve the effective recipient list once for each distribution call.
+    /// Keeping this path shared avoids repeating the defaults/collaborators/share
+    /// map reads in resilient and normal distributions.
+    fn resolve_recipients(env: &Env, override_recipients: Vec<Recipient>) -> Result<Vec<Recipient>, ContractError> {
+        if !override_recipients.is_empty() {
+            return Ok(override_recipients);
+        }
+
+        let defaults: Vec<Recipient> = storage::persistent_get(env, &StorageKey::DefaultRecipients)
+            .unwrap_or(Vec::new(&env));
+        if !defaults.is_empty() {
+            return Ok(defaults);
+        }
+
+        let collaborators = Self::require_collaborators(env)?;
+        let share_map = Self::require_share_map(env)?;
+        let mut recipients = Vec::new(env);
+        for address in collaborators.iter() {
+            recipients.push_back(Recipient {
+                address,
+                share: share_map.get(address.clone()).unwrap_or(0),
+            });
+        }
+        Ok(recipients)
+    }
+
+    /// Calculate all payouts in one pass, assigning rounding dust to the final
+    /// recipient so the sum always equals the distribution amount.
+    fn calculate_payouts(
+        env: &Env,
+        amount: i128,
+        recipients: &Vec<Recipient>,
+    ) -> Result<Vec<(Address, i128)>, ContractError> {
+        Self::validate_recipient_list(env, recipients)?;
+        if amount < recipients.len() as i128 {
+            return Err(ContractError::AmountTooSmall);
+        }
+
+        let mut payouts = Vec::new(env);
+        let mut total_calculated: i128 = 0;
+        let last_index = recipients.len() - 1;
+        for index in 0..recipients.len() {
+            let recipient = recipients.get(index).unwrap_optimized();
+            let payout = if index == last_index {
+                amount
+                    .checked_sub(total_calculated)
+                    .ok_or(ContractError::ArithmeticOverflow)?
+            } else {
+                let payout = Self::checked_bps_amount(env, amount, recipient.share)?;
+                total_calculated = total_calculated
+                    .checked_add(payout)
+                    .ok_or(ContractError::ArithmeticOverflow)?;
+                payout
+            };
+            payouts.push_back((recipient.address.clone(), payout));
+        }
+        Ok(payouts)
+    }
+
     fn initialize_validated(
         env: &Env,
         collaborators: Vec<Address>,
@@ -1080,62 +1139,8 @@ impl RoyaltySplitter {
             return Ok(());
         }
 
-        let recipients_to_use: Vec<Recipient> = if !override_recipients.is_empty() {
-            override_recipients
-        } else {
-            let defaults: Vec<Recipient> =
-                storage::persistent_get::<Vec<Recipient>>(&env, &StorageKey::DefaultRecipients)
-                    .unwrap_or(Vec::new(&env));
-
-            if !defaults.is_empty() {
-                defaults
-            } else {
-                let collaborators: Vec<Address> =
-                    storage::persistent_get::<Vec<Address>>(&env, &StorageKey::Collaborators)
-                        .expect("no collaborators");
-
-                let share_map: Map<Address, u32> =
-                    storage::persistent_get::<Map<Address, u32>>(&env, &StorageKey::ShareMap)
-                        .expect("no share map");
-
-                let mut recipients: Vec<Recipient> = Vec::new(&env);
-                for addr in collaborators.iter() {
-                    let share = share_map.get(addr.clone()).unwrap_or(0);
-                    recipients.push_back(Recipient {
-                        address: addr,
-                        share,
-                    });
-                }
-                recipients
-            }
-        };
-
-        Self::validate_recipient_list(&env, &recipients_to_use)?;
-
-        let n = recipients_to_use.len();
-
-        if amount < n as i128 {
-            return Err(ContractError::AmountTooSmall);
-        }
-        let mut payouts: Vec<(Address, i128)> = Vec::new(&env);
-        let mut total_calculated: i128 = 0;
-
-        for i in 0..(n - 1) {
-            let recipient = recipients_to_use.get(i).unwrap();
-            let payout = Self::checked_bps_amount(&env, amount, recipient.share)?;
-            payouts.push_back((recipient.address.clone(), payout));
-            total_calculated = total_calculated
-                .checked_add(payout)
-                .ok_or(ContractError::ArithmeticOverflow)?;
-        }
-
-        let last = recipients_to_use.get(n - 1).unwrap();
-        payouts.push_back((
-            last.address.clone(),
-            amount
-                .checked_sub(total_calculated)
-                .ok_or(ContractError::ArithmeticOverflow)?,
-        ));
+        let recipients_to_use = Self::resolve_recipients(&env, override_recipients)?;
+        let payouts = Self::calculate_payouts(&env, amount, &recipients_to_use)?;
 
         for (addr, payout) in payouts.iter() {
             token_client.transfer(&env.current_contract_address(), &addr, &payout);
@@ -1186,59 +1191,9 @@ impl RoyaltySplitter {
             return Err(ContractError::Underfunded);
         }
 
-        let recipients_to_use: Vec<Recipient> = if !override_recipients.is_empty() {
-            override_recipients
-        } else {
-            let defaults: Vec<Recipient> =
-                storage::persistent_get::<Vec<Recipient>>(&env, &StorageKey::DefaultRecipients)
-                    .unwrap_or(Vec::new(&env));
-
-            if !defaults.is_empty() {
-                defaults
-            } else {
-                let collaborators: Vec<Address> =
-                    storage::persistent_get::<Vec<Address>>(&env, &StorageKey::Collaborators)
-                        .expect("no collaborators");
-                let share_map: Map<Address, u32> =
-                    storage::persistent_get::<Map<Address, u32>>(&env, &StorageKey::ShareMap)
-                        .expect("no share map");
-
-                let mut recipients: Vec<Recipient> = Vec::new(&env);
-                for addr in collaborators.iter() {
-                    let share = share_map.get(addr.clone()).unwrap_or(0);
-                    recipients.push_back(Recipient {
-                        address: addr,
-                        share,
-                    });
-                }
-                recipients
-            }
-        };
-
-        Self::validate_recipient_list(&env, &recipients_to_use)?;
-
+        let recipients_to_use = Self::resolve_recipients(&env, override_recipients)?;
+        let payouts = Self::calculate_payouts(&env, amount, &recipients_to_use)?;
         let n = recipients_to_use.len();
-        if amount < n as i128 {
-            return Err(ContractError::AmountTooSmall);
-        }
-
-        let mut payouts: Vec<(Address, i128)> = Vec::new(&env);
-        let mut total_calculated: i128 = 0;
-        for i in 0..(n - 1) {
-            let recipient = recipients_to_use.get(i).unwrap();
-            let payout = Self::checked_bps_amount(&env, amount, recipient.share)?;
-            payouts.push_back((recipient.address.clone(), payout));
-            total_calculated = total_calculated
-                .checked_add(payout)
-                .ok_or(ContractError::ArithmeticOverflow)?;
-        }
-        let last = recipients_to_use.get(n - 1).unwrap();
-        payouts.push_back((
-            last.address.clone(),
-            amount
-                .checked_sub(total_calculated)
-                .ok_or(ContractError::ArithmeticOverflow)?,
-        ));
 
         env.events().publish(
             (symbol_short!("royalty"), symbol_short!("dist_strt")),

@@ -47,6 +47,16 @@ export {
 // Audit logging
 export { getAuditLog, addAuditLog, countAuditLog } from "./audit.js";
 
+// Centralized application logs (#874)
+export {
+  appendApplicationLog,
+  queryApplicationLogs,
+  countApplicationLogs,
+  pruneApplicationLogs,
+  evaluateLogAlerts,
+  DEFAULT_RETENTION_DAYS,
+} from "./application-logs.js";
+
 // Secondary royalties
 export {
   recordSecondarySale,
