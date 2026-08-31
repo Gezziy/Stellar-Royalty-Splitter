@@ -47,7 +47,9 @@ export function createMetricsPusher({
     const response = await fetchImpl(buildPushgatewayUrl(config), {
       method: "PUT",
       headers: { "Content-Type": "text/plain; version=0.0.4; charset=utf-8" },
-      body: metricsProvider(),
+      // `prometheusMetrics()` is async (prom-client's registry export is
+      // promise-based) — awaiting it keeps the PUT body a real string.
+      body: await metricsProvider(),
     });
     if (!response.ok) {
       throw new Error(`Pushgateway responded with ${response.status}`);

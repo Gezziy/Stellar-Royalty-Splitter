@@ -35,7 +35,7 @@ export const LiveEarningsCounter: React.FC<LiveEarningsCounterProps> = ({
       setIsAnimating(true);
 
       const animate = (currentTime: number) => {
-        if (!startTimeRef.current || !startValueRef.current) return;
+        if (startTimeRef.current === undefined || startValueRef.current === undefined) return;
 
         const elapsed = currentTime - startTimeRef.current;
         const progress = Math.min(elapsed / duration, 1);

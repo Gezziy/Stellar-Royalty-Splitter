@@ -8,6 +8,7 @@ import { CopyButton } from "./CopyButton";
 import { Skeleton } from "./Skeleton";
 import MultiContractComparison from "./MultiContractComparison";
 import { LiveEarningsCounter } from "./LiveEarningsCounter";
+import ContributorPerformanceComparison from "./ContributorPerformanceComparison";
 import { useWebSocket, type DistributionEvent } from "../hooks/useWebSocket";
 import {
   buildExportFilename,
@@ -22,15 +23,32 @@ import { useCollaborators } from "../hooks/queries/useCollaborators";
 import { useRoyaltyStats } from "../hooks/queries/useRoyaltyStats";
 import { useTransactionHistory } from "../hooks/queries/useTransactionHistory";
 import { useSecondarySales } from "../hooks/queries/useSecondarySales";
+import { AdvancedAnalyticsDashboard } from "./AdvancedAnalyticsDashboard";
 import "./EarningsDashboard.css";
 import type { TransactionRecord } from "../api";
 
-interface CollaboratorEarning {
+export interface CollaboratorEarning {
   address: string;
   basisPoints: number;
   totalEarned: number;
   payoutCount: number;
   avgPayout: number;
+  firstActivity: string | null;
+  lastActivity: string | null;
+}
+
+interface LiveDistribution {
+  amount: number;
+  type: DistributionEvent["type"];
+  transactionId: string | number;
+  timestamp: string;
+}
+
+export function distributionAmount(event: DistributionEvent): number | null {
+  const raw = event.royaltyAmount ?? event.totalRoyalties ?? event.requestedAmount;
+  if (raw === undefined || raw === null) return null;
+  const amount = Number(raw);
+  return Number.isFinite(amount) && amount > 0 ? amount : null;
 }
 
 interface RecentPayout {
@@ -88,6 +106,17 @@ export const EarningsDashboard: React.FC<EarningsDashboardProps> = ({
     selectedContract === ALL_CONTRACTS ? "" : selectedContract;
   const showComparison = selectedContract === ALL_CONTRACTS;
 
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [totalDistributed, setTotalDistributed] = useState<number>(0);
+  const [primaryTotal, setPrimaryTotal] = useState<number>(0);
+  const [secondaryTotal, setSecondaryTotal] = useState<number>(0);
+  const [latestDistribution, setLatestDistribution] = useState<LiveDistribution | null>(null);
+  const [collaborators, setCollaborators] = useState<CollaboratorEarning[]>([]);
+  const [recentPayouts, setRecentPayouts] = useState<RecentPayout[]>([]);
+  const [activeTab, setActiveTab] = useState<"all" | "primary" | "secondary">("all");
+  const [searchQuery, setSearchQuery] = useState("");
+
   // #770: multi-format export (PDF/CSV/JSON) of the earnings dashboard.
   const dashboardRef = useRef<HTMLDivElement>(null);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
@@ -129,6 +158,57 @@ export const EarningsDashboard: React.FC<EarningsDashboardProps> = ({
     (event: DistributionEvent) => {
       if (event.contractId === activeContract) {
         handleRefresh();
+  const loadDashboardData = useCallback(async (showLoader = true) => {
+    if (!activeContract) {
+      setLoading(false);
+      return;
+    }
+
+    if (showLoader) setLoading(true);
+    setError(null);
+
+    try {
+      // Fetch analytics, collaborator shares, royalty stats, and transaction history in parallel
+      const [analyticsRes, collabRes, statsRes, historyRes, salesRes] = await Promise.allSettled([
+        api.getAnalytics(activeContract),
+        api.getCollaborators(activeContract),
+        api.getRoyaltyStats(activeContract),
+        api.getTransactionHistory(activeContract, 20, 0),
+        api.getSecondarySales(activeContract, 20, 0),
+      ]);
+
+      if (analyticsRes.status === "rejected" && collabRes.status === "rejected") {
+        setError("Failed to load earnings dashboard data. Please try again.");
+        return;
+      }
+
+      // Parse Analytics data
+      let totalDist = 0;
+      let primTotal = 0;
+      let secTotal = 0;
+      let collabStatsMap = new Map<string, {
+        totalEarned: number;
+        payoutCount: number;
+        avgPayout: number;
+        firstActivity: string | null;
+        lastActivity: string | null;
+      }>();
+
+      if (analyticsRes.status === "fulfilled" && analyticsRes.value.success) {
+        const data = analyticsRes.value.data;
+        totalDist = data.totalDistributed ?? 0;
+        primTotal = data.primaryRoyaltiesTotal ?? 0;
+        secTotal = data.secondaryRoyaltiesTotal ?? 0;
+
+        (data.collaboratorStats || []).forEach((c) => {
+          collabStatsMap.set(c.address, {
+            totalEarned: c.totalEarned,
+            payoutCount: c.payoutCount,
+            avgPayout: c.avgPayout ?? (c.payoutCount > 0 ? c.totalEarned / c.payoutCount : 0),
+            firstActivity: c.firstActivity ?? null,
+            lastActivity: c.lastActivity ?? null,
+          });
+        });
       }
     },
     [activeContract], // eslint-disable-line react-hooks/exhaustive-deps
@@ -160,6 +240,40 @@ export const EarningsDashboard: React.FC<EarningsDashboardProps> = ({
       });
     });
   }
+      // Combine Collaborator shares with earnings stats
+      let collabList: CollaboratorEarning[] = [];
+      if (collabRes.status === "fulfilled" && Array.isArray(collabRes.value)) {
+        collabList = collabRes.value.map((c) => {
+          const stats = collabStatsMap.get(c.address) || {
+            totalEarned: 0,
+            payoutCount: 0,
+            avgPayout: 0,
+            firstActivity: null,
+            lastActivity: null,
+          };
+          return {
+            address: c.address,
+            basisPoints: c.basisPoints,
+            totalEarned: stats.totalEarned,
+            payoutCount: stats.payoutCount,
+            avgPayout: stats.avgPayout,
+            firstActivity: stats.firstActivity,
+            lastActivity: stats.lastActivity,
+          };
+        });
+      } else if (collabStatsMap.size > 0) {
+        collabStatsMap.forEach((stats, addr) => {
+          collabList.push({
+            address: addr,
+            basisPoints: 0,
+            totalEarned: stats.totalEarned,
+            payoutCount: stats.payoutCount,
+            avgPayout: stats.avgPayout,
+            firstActivity: stats.firstActivity,
+            lastActivity: stats.lastActivity,
+          });
+        });
+      }
 
   // Fill secondary total from royalty stats if analytics didn't provide it
   if (!secondaryTotal && royaltyStatsQuery.data?.totalRoyaltiesGenerated) {
@@ -231,6 +345,52 @@ export const EarningsDashboard: React.FC<EarningsDashboardProps> = ({
       (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
     );
   }, [txHistoryQuery.data, secondarySalesQuery.data]);
+      }
+
+      // Sort payouts descending by timestamp
+      payoutsList.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+      setTotalDistributed(totalDist);
+      setPrimaryTotal(primTotal);
+      setSecondaryTotal(secTotal);
+      setCollaborators(collabList);
+      setRecentPayouts(payoutsList);
+    } catch (err: unknown) {
+      console.error("Error loading earnings dashboard:", err);
+      setError("Failed to load earnings dashboard data. Please try again.");
+    } finally {
+      if (showLoader) setLoading(false);
+    }
+  }, [activeContract]);
+
+  useEffect(() => {
+    void loadDashboardData();
+  }, [loadDashboardData]);
+
+  // Handle distribution events for real-time earnings updates
+  const handleDistributionEvent = useCallback((event: DistributionEvent) => {
+    if (event.contractId !== activeContract) return;
+
+    const amount = distributionAmount(event);
+    if (amount !== null) {
+      setTotalDistributed((current) => current + amount);
+      if (event.type === "secondary_distribution_completed" || event.type === "secondary_sale_recorded") {
+        setSecondaryTotal((current) => current + amount);
+      } else {
+        setPrimaryTotal((current) => current + amount);
+      }
+      setLatestDistribution({
+        amount,
+        type: event.type,
+        transactionId: event.transactionId,
+        timestamp: event.timestamp,
+      });
+    }
+
+    // Reconcile collaborator rows and payout history in the background without
+    // replacing the visible dashboard with a loading skeleton.
+    void loadDashboardData(false);
+  }, [activeContract, loadDashboardData]);
 
   // ── Selectors ────────────────────────────────────────────────────────────
 
@@ -430,6 +590,19 @@ export const EarningsDashboard: React.FC<EarningsDashboardProps> = ({
         </button>
       </header>
 
+      {latestDistribution && (
+        <div className="live-distribution-banner" role="status" data-testid="latest-distribution">
+          <span className="live-distribution-pulse" aria-hidden="true">●</span>
+          <span>
+            Latest distribution added <strong>{formatCurrency(latestDistribution.amount, settings.displayCurrency)}</strong>
+            {latestDistribution.type === "secondary_sale_recorded" ? " from a secondary sale" : " to the dashboard"}.
+          </span>
+          <time dateTime={latestDistribution.timestamp}>
+            {new Date(latestDistribution.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+          </time>
+        </div>
+      )}
+
       {exportError && (
         <div className="export-error-banner" role="alert">
           {exportError}
@@ -487,6 +660,9 @@ export const EarningsDashboard: React.FC<EarningsDashboardProps> = ({
           <div className="kpi-subtext">Allocated payout recipients</div>
         </div>
       </section>
+
+      {/* Advanced Analytics Section */}
+      <AdvancedAnalyticsDashboard payouts={recentPayouts} contractId={activeContract} />
 
       {/* Collaborators Breakdown Section */}
       <section className="dashboard-section collaborators-section" aria-labelledby="collab-earnings-heading">
@@ -575,6 +751,11 @@ export const EarningsDashboard: React.FC<EarningsDashboardProps> = ({
           </table>
         </div>
       </section>
+
+      <ContributorPerformanceComparison
+        collaborators={collaborators}
+        currency={settings.displayCurrency}
+      />
 
       {/* Recent Payout Activity Section */}
       <section className="dashboard-section recent-activity-section" aria-labelledby="payout-activity-heading">

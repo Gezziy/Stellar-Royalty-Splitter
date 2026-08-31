@@ -24,11 +24,7 @@
 #![cfg(all(test, feature = "testutils"))]
 
 use proptest::prelude::*;
-use soroban_sdk::{
-    testutils::Address as _,
-    token::StellarAssetClient,
-    vec, Address, Env,
-};
+use soroban_sdk::{testutils::Address as _, token::StellarAssetClient, vec, Address, Env};
 use stellar_royalty_splitter::{ContractError, RoyaltySplitterClient};
 
 // ── Test helpers (mirrors integration_test.rs) ────────────────────────────
@@ -106,11 +102,17 @@ fn config_100() -> ProptestConfig {
 }
 
 fn config_1000() -> ProptestConfig {
-    ProptestConfig { cases: 1_000, ..ProptestConfig::default() }
+    ProptestConfig {
+        cases: 1_000,
+        ..ProptestConfig::default()
+    }
 }
 
 fn config_10000() -> ProptestConfig {
-    ProptestConfig { cases: 10_000, ..ProptestConfig::default() }
+    ProptestConfig {
+        cases: 10_000,
+        ..ProptestConfig::default()
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

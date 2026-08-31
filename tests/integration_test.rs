@@ -5,9 +5,9 @@ use soroban_sdk::{
     token::{Client as TokenClient, StellarAssetClient},
     vec, Address, BytesN, Env, IntoVal, Map, String, TryFromVal, Val, Vec as SorobanVec,
 };
-use stellar_royalty_splitter::{RATE_HISTORY_CAP, 
-    auth, ContractError, DataKey, OperationType, Recipient, RoyaltySplitterClient, StorageKey, RoyaltyRateChange,
-    MIN_TTL, VERSION,
+use stellar_royalty_splitter::{
+    auth, ContractError, DataKey, OperationType, Recipient, RoyaltyRateChange,
+    RoyaltySplitterClient, StorageKey, MIN_TTL, RATE_HISTORY_CAP, VERSION,
 };
 
 fn setup(env: &Env) -> (Address, RoyaltySplitterClient<'_>) {
@@ -245,10 +245,7 @@ fn test_migrate_records_versioned_state_once() {
 
     let admin = Address::generate(&env);
     let b = Address::generate(&env);
-    client.initialize(
-        &vec![&env, admin, b],
-        &vec![&env, 5000_u32, 5000_u32],
-    );
+    client.initialize(&vec![&env, admin, b], &vec![&env, 5000_u32, 5000_u32]);
 
     let from_version = String::from_str(&env, "0.0.1");
     client.migrate(&from_version);
@@ -428,7 +425,10 @@ fn test_failed_update_share_does_not_change_share_map() {
 
     // 5000 -> 7000 makes the total 12,000; must be rejected.
     let result = client.try_update_share(&admin, &7000_u32);
-    assert_eq!(result, Err(Ok(ContractError::InvalidUpdatedShareTotal.into())));
+    assert_eq!(
+        result,
+        Err(Ok(ContractError::InvalidUpdatedShareTotal.into()))
+    );
 
     assert_eq!(client.get_share(&admin), 5000);
     assert_eq!(client.get_share(&b), 5000);
@@ -703,7 +703,10 @@ fn test_is_collaborator_known_and_unknown() {
     let a = Address::generate(&env);
     let b = Address::generate(&env);
     let stranger = Address::generate(&env);
-    client.initialize(&vec![&env, a.clone(), b.clone()], &vec![&env, 6000_u32, 4000_u32]);
+    client.initialize(
+        &vec![&env, a.clone(), b.clone()],
+        &vec![&env, 6000_u32, 4000_u32],
+    );
 
     assert!(client.is_collaborator(&a));
     assert!(client.is_collaborator(&b));
@@ -733,7 +736,10 @@ fn test_is_collaborator_reflects_current_registration_only() {
     let (_, client) = setup(&env);
     let a = Address::generate(&env);
     let b = Address::generate(&env);
-    client.initialize(&vec![&env, a.clone(), b.clone()], &vec![&env, 6000_u32, 4000_u32]);
+    client.initialize(
+        &vec![&env, a.clone(), b.clone()],
+        &vec![&env, 6000_u32, 4000_u32],
+    );
 
     client.update_share(&a, &7000_u32);
     client.update_share(&b, &3000_u32);
@@ -1900,7 +1906,10 @@ fn test_distribute_with_override_invalid_share_sum_panics_without_distribution()
         client.distribute_with_override(&token, &bad_override_low);
     }));
 
-    assert!(result.is_err(), "Distribution should panic when override shares sum to 9999");
+    assert!(
+        result.is_err(),
+        "Distribution should panic when override shares sum to 9999"
+    );
     assert_eq!(TokenClient::new(&env, &token).balance(&contract_id), amount);
     assert_eq!(TokenClient::new(&env, &token).balance(&admin), 0);
     assert_eq!(TokenClient::new(&env, &token).balance(&c), 0);
@@ -1921,7 +1930,10 @@ fn test_distribute_with_override_invalid_share_sum_panics_without_distribution()
         client.distribute_with_override(&token, &bad_override_high);
     }));
 
-    assert!(result.is_err(), "Distribution should panic when override shares sum to 10001");
+    assert!(
+        result.is_err(),
+        "Distribution should panic when override shares sum to 10001"
+    );
     assert_eq!(TokenClient::new(&env, &token).balance(&contract_id), amount);
     assert_eq!(TokenClient::new(&env, &token).balance(&admin), 0);
     assert_eq!(TokenClient::new(&env, &token).balance(&c), 0);
@@ -3146,7 +3158,10 @@ fn test_collaborators_in_persistent_storage() {
 
     let a = Address::generate(&env);
     let b = Address::generate(&env);
-    client.initialize(&vec![&env, a.clone(), b.clone()], &vec![&env, 5000_u32, 5000_u32]);
+    client.initialize(
+        &vec![&env, a.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
 
     env.as_contract(&contract_id, || {
         let collaborators: SorobanVec<Address> = env
@@ -3168,7 +3183,10 @@ fn test_share_map_in_persistent_storage() {
 
     let a = Address::generate(&env);
     let b = Address::generate(&env);
-    client.initialize(&vec![&env, a.clone(), b.clone()], &vec![&env, 6000_u32, 4000_u32]);
+    client.initialize(
+        &vec![&env, a.clone(), b.clone()],
+        &vec![&env, 6000_u32, 4000_u32],
+    );
 
     env.as_contract(&contract_id, || {
         let share_map: Map<Address, u32> = env
@@ -3191,10 +3209,19 @@ fn test_default_recipients_in_persistent_storage() {
 
     let a = Address::generate(&env);
     let b = Address::generate(&env);
-    client.initialize(&vec![&env, a.clone(), b.clone()], &vec![&env, 5000_u32, 5000_u32]);
+    client.initialize(
+        &vec![&env, a.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
 
-    let r1 = Recipient { address: a.clone(), share: 7000_u32 };
-    let r2 = Recipient { address: b.clone(), share: 3000_u32 };
+    let r1 = Recipient {
+        address: a.clone(),
+        share: 7000_u32,
+    };
+    let r2 = Recipient {
+        address: b.clone(),
+        share: 3000_u32,
+    };
     client.set_default_recipients(&vec![&env, r1, r2]);
 
     env.as_contract(&contract_id, || {
@@ -3221,7 +3248,10 @@ fn test_propose_admin_does_not_change_admin_immediately() {
     let b = Address::generate(&env);
     let new_admin = Address::generate(&env);
 
-    client.initialize(&vec![&env, admin.clone(), b.clone()], &vec![&env, 5000_u32, 5000_u32]);
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
     client.propose_admin_transfer(&new_admin);
 
     // Admin must still be original — transfer not complete until accept_admin
@@ -3238,7 +3268,10 @@ fn test_accept_admin_completes_transfer() {
     let b = Address::generate(&env);
     let new_admin = Address::generate(&env);
 
-    client.initialize(&vec![&env, admin.clone(), b.clone()], &vec![&env, 5000_u32, 5000_u32]);
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
     client.propose_admin_transfer(&new_admin);
     client.accept_admin();
 
@@ -3253,11 +3286,17 @@ fn test_accept_admin_without_proposal_returns_error() {
 
     let admin = Address::generate(&env);
     let b = Address::generate(&env);
-    client.initialize(&vec![&env, admin.clone(), b.clone()], &vec![&env, 5000_u32, 5000_u32]);
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
 
     // No pending admin transfer has been proposed — must return an error
     let result = client.try_accept_admin();
-    assert!(result.is_err(), "accept_admin without a pending proposal must error");
+    assert!(
+        result.is_err(),
+        "accept_admin without a pending proposal must error"
+    );
 }
 
 #[test]
@@ -3270,7 +3309,10 @@ fn test_accept_admin_requires_pending_admin_auth() {
     let new_admin = Address::generate(&env);
 
     env.mock_all_auths_allowing_non_root_auth();
-    client.initialize(&vec![&env, admin.clone(), b.clone()], &vec![&env, 5000_u32, 5000_u32]);
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
     client.propose_admin_transfer(&new_admin);
 
     // Only the pending admin (new_admin) must sign accept_admin
@@ -3297,7 +3339,10 @@ fn test_propose_admin_emits_event() {
     let b = Address::generate(&env);
     let new_admin = Address::generate(&env);
 
-    client.initialize(&vec![&env, admin.clone(), b.clone()], &vec![&env, 5000_u32, 5000_u32]);
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
     client.propose_admin_transfer(&new_admin);
 
     let events = env.events().all();
@@ -3324,7 +3369,10 @@ fn test_accept_admin_emits_event() {
     let b = Address::generate(&env);
     let new_admin = Address::generate(&env);
 
-    client.initialize(&vec![&env, admin.clone(), b.clone()], &vec![&env, 5000_u32, 5000_u32]);
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
     client.propose_admin_transfer(&new_admin);
     client.accept_admin();
 
@@ -3352,12 +3400,18 @@ fn test_admin_transfer_blocked_when_multisig_active() {
     let b = Address::generate(&env);
     let new_admin = Address::generate(&env);
 
-    client.initialize(&vec![&env, admin.clone(), b.clone()], &vec![&env, 5000_u32, 5000_u32]);
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
     client.set_admins(&vec![&env, admin.clone(), b.clone()], &2);
 
     // admin_transfer must be blocked when multi-sig is active
     let result = client.try_admin_transfer(&new_admin);
-    assert!(result.is_err(), "admin_transfer must error when multi-sig is active");
+    assert!(
+        result.is_err(),
+        "admin_transfer must error when multi-sig is active"
+    );
     // Admin unchanged
     assert_eq!(client.get_admin(), admin);
 }
@@ -3374,7 +3428,10 @@ fn test_set_admins_stores_list() {
     let b = Address::generate(&env);
     let c = Address::generate(&env);
 
-    client.initialize(&vec![&env, admin.clone(), b.clone()], &vec![&env, 5000_u32, 5000_u32]);
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
     client.set_admins(&vec![&env, admin.clone(), b.clone(), c.clone()], &2);
 
     let admins = client.get_admins();
@@ -3392,7 +3449,10 @@ fn test_get_admins_returns_empty_before_set() {
 
     let admin = Address::generate(&env);
     let b = Address::generate(&env);
-    client.initialize(&vec![&env, admin.clone(), b.clone()], &vec![&env, 5000_u32, 5000_u32]);
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
 
     assert_eq!(client.get_admins().len(), 0);
 }
@@ -3408,7 +3468,10 @@ fn test_multisig_sensitive_function_requires_threshold_auths() {
     let token = make_token(&env, &token_admin);
 
     env.mock_all_auths_allowing_non_root_auth();
-    client.initialize(&vec![&env, admin.clone(), b.clone()], &vec![&env, 5000_u32, 5000_u32]);
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
     // Set 2-of-2 multi-sig
     client.set_admins(&vec![&env, admin.clone(), b.clone()], &2);
 
@@ -3454,7 +3517,10 @@ fn test_multisig_fails_with_fewer_than_threshold_auths() {
     let token = make_token(&env, &token_admin);
 
     env.mock_all_auths_allowing_non_root_auth();
-    client.initialize(&vec![&env, admin.clone(), b.clone()], &vec![&env, 5000_u32, 5000_u32]);
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
     // Set 2-of-2 multi-sig
     client.set_admins(&vec![&env, admin.clone(), b.clone()], &2);
 
@@ -3471,7 +3537,10 @@ fn test_multisig_fails_with_fewer_than_threshold_auths() {
         },
     }]);
     let result = client.try_distribute(&token);
-    assert!(result.is_err(), "distribute must fail with only 1 of 2 required auths");
+    assert!(
+        result.is_err(),
+        "distribute must fail with only 1 of 2 required auths"
+    );
 }
 
 #[test]
@@ -3484,7 +3553,10 @@ fn test_set_admins_requires_current_admin_auth() {
     let intruder = Address::generate(&env);
 
     env.mock_all_auths_allowing_non_root_auth();
-    client.initialize(&vec![&env, admin.clone(), b.clone()], &vec![&env, 5000_u32, 5000_u32]);
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
 
     // Provide auth for intruder only (not admin) — must fail authorization
     env.mock_auths(&[MockAuth {
@@ -3497,7 +3569,10 @@ fn test_set_admins_requires_current_admin_auth() {
         },
     }]);
     let result = client.try_set_admins(&vec![&env, intruder.clone()], &1);
-    assert!(result.is_err(), "set_admins must require current admin auth");
+    assert!(
+        result.is_err(),
+        "set_admins must require current admin auth"
+    );
 }
 
 #[test]
@@ -3508,7 +3583,10 @@ fn test_set_admins_rejects_zero_threshold() {
 
     let admin = Address::generate(&env);
     let b = Address::generate(&env);
-    client.initialize(&vec![&env, admin.clone(), b.clone()], &vec![&env, 5000_u32, 5000_u32]);
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
 
     let result = client.try_set_admins(&vec![&env, admin.clone()], &0);
     assert!(result.is_err(), "threshold of 0 must be rejected");
@@ -3522,11 +3600,17 @@ fn test_set_admins_rejects_threshold_exceeds_list() {
 
     let admin = Address::generate(&env);
     let b = Address::generate(&env);
-    client.initialize(&vec![&env, admin.clone(), b.clone()], &vec![&env, 5000_u32, 5000_u32]);
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
 
     // threshold=3 but only 2 admins in list — must be rejected
     let result = client.try_set_admins(&vec![&env, admin.clone(), b.clone()], &3);
-    assert!(result.is_err(), "threshold exceeding admin count must be rejected");
+    assert!(
+        result.is_err(),
+        "threshold exceeding admin count must be rejected"
+    );
 }
 
 #[test]
@@ -3537,7 +3621,10 @@ fn test_set_admins_rejects_empty_list() {
 
     let admin = Address::generate(&env);
     let b = Address::generate(&env);
-    client.initialize(&vec![&env, admin.clone(), b.clone()], &vec![&env, 5000_u32, 5000_u32]);
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
 
     let result = client.try_set_admins(&vec![&env], &1);
     assert!(result.is_err(), "empty admin list must be rejected");
@@ -3553,7 +3640,10 @@ fn test_rate_history_empty_before_first_change() {
 
     let admin = Address::generate(&env);
     let b = Address::generate(&env);
-    client.initialize(&vec![&env, admin.clone(), b.clone()], &vec![&env, 5000_u32, 5000_u32]);
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
 
     assert_eq!(client.get_royalty_rate_history().len(), 0);
 }
@@ -3566,7 +3656,10 @@ fn test_rate_history_records_entry_on_set() {
 
     let admin = Address::generate(&env);
     let b = Address::generate(&env);
-    client.initialize(&vec![&env, admin.clone(), b.clone()], &vec![&env, 5000_u32, 5000_u32]);
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
 
     env.ledger().with_mut(|l| l.timestamp = 1_000_000);
     client.set_royalty_rate(&500_u32);
@@ -3589,7 +3682,10 @@ fn test_rate_history_records_consecutive_changes() {
 
     let admin = Address::generate(&env);
     let b = Address::generate(&env);
-    client.initialize(&vec![&env, admin.clone(), b.clone()], &vec![&env, 5000_u32, 5000_u32]);
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
 
     env.ledger().with_mut(|l| l.timestamp = 100);
     client.set_royalty_rate(&200_u32);
@@ -3627,7 +3723,10 @@ fn test_rate_history_capped_at_limit() {
 
     let admin = Address::generate(&env);
     let b = Address::generate(&env);
-    client.initialize(&vec![&env, admin.clone(), b.clone()], &vec![&env, 5000_u32, 5000_u32]);
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
 
     // Write CAP + 3 entries — history must never exceed RATE_HISTORY_CAP
     let total = RATE_HISTORY_CAP + 3;
@@ -3662,7 +3761,10 @@ fn test_rate_history_in_persistent_storage() {
 
     let admin = Address::generate(&env);
     let b = Address::generate(&env);
-    client.initialize(&vec![&env, admin.clone(), b.clone()], &vec![&env, 5000_u32, 5000_u32]);
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
     client.set_royalty_rate(&300_u32);
 
     env.as_contract(&contract_id, || {
@@ -4683,7 +4785,10 @@ fn test_record_secondary_royalty_rejects_missing_auth() {
 
     env.mock_auths(&[]);
     let result = client.try_record_secondary_royalty(&token, &admin, &100_i128);
-    assert!(result.is_err(), "record_secondary_royalty must require payer auth");
+    assert!(
+        result.is_err(),
+        "record_secondary_royalty must require payer auth"
+    );
     assert_eq!(client.get_secondary_pool(), 0);
 }
 
@@ -4920,7 +5025,10 @@ fn test_update_share_rejects_non_admin_caller() {
         },
     }]);
     let result = client.try_update_share(&b, &6000_u32);
-    assert!(result.is_err(), "update_share must reject a non-admin caller");
+    assert!(
+        result.is_err(),
+        "update_share must reject a non-admin caller"
+    );
     assert_eq!(client.get_share(&b), 5000);
 }
 
@@ -5403,7 +5511,12 @@ fn test_distribute_emits_per_recipient_dist_events_with_metadata() {
             && val_eq(
                 &env,
                 data,
-                (admin.clone(), 600_i128, token.clone(), symbol_short!("primary")),
+                (
+                    admin.clone(),
+                    600_i128,
+                    token.clone(),
+                    symbol_short!("primary"),
+                ),
             )
     });
     assert!(
@@ -5464,7 +5577,12 @@ fn test_batch_distribute_emits_per_recipient_dist_events_tagged_batch() {
             && val_eq(
                 &env,
                 data,
-                (admin.clone(), 500_i128, token.clone(), symbol_short!("batch")),
+                (
+                    admin.clone(),
+                    500_i128,
+                    token.clone(),
+                    symbol_short!("batch"),
+                ),
             )
     });
     assert!(found, "batch-tagged per-recipient dist event not emitted");
@@ -5504,7 +5622,12 @@ fn test_distribute_secondary_emits_per_recipient_events_with_metadata() {
             && val_eq(
                 &env,
                 data,
-                (admin.clone(), 300_i128, token.clone(), symbol_short!("secondary")),
+                (
+                    admin.clone(),
+                    300_i128,
+                    token.clone(),
+                    symbol_short!("secondary"),
+                ),
             )
     });
     assert!(found, "per-recipient sec_pay event not emitted");
@@ -5572,7 +5695,6 @@ fn test_set_admins_emits_event() {
     });
     assert!(found, "adms_set event not emitted");
 }
-
 
 // =============================================================================
 // Issue #674 — Failed royalty transfer scenarios
@@ -5824,7 +5946,12 @@ fn test_secondary_distribution_clears_pool() {
 fn setup_split<'a>(
     env: &'a Env,
     shares: &'a [u32],
-) -> (Address, RoyaltySplitterClient<'a>, SorobanVec<Address>, Address) {
+) -> (
+    Address,
+    RoyaltySplitterClient<'a>,
+    SorobanVec<Address>,
+    Address,
+) {
     let contract_id = env.register_contract(None, stellar_royalty_splitter::RoyaltySplitter);
     let client = RoyaltySplitterClient::new(env, &contract_id);
 
@@ -5851,14 +5978,24 @@ fn setup_split<'a>(
 #[test]
 fn test_invariant_payouts_never_exceed_input() {
     let share_configs: &[&[u32]] = &[
-        &[10_000],                         // single collaborator
-        &[5_000, 5_000],                   // equal 50/50
-        &[3_000, 3_000, 4_000],            // 3-way
-        &[1_000, 2_000, 3_000, 4_000],     // 4-way ascending
-        &[9_999, 1],                        // extreme 99.99 / 0.01
+        &[10_000],                           // single collaborator
+        &[5_000, 5_000],                     // equal 50/50
+        &[3_000, 3_000, 4_000],              // 3-way
+        &[1_000, 2_000, 3_000, 4_000],       // 4-way ascending
+        &[9_999, 1],                         // extreme 99.99 / 0.01
         &[1, 1, 1, 1, 1, 1, 1, 1, 1, 9_991], // 10 collaborators, dust at start
     ];
-    let amounts: &[i128] = &[1, 2, 10, 100, 1_000, 9_999, 10_000, 1_000_000, 999_999_999_999_999];
+    let amounts: &[i128] = &[
+        1,
+        2,
+        10,
+        100,
+        1_000,
+        9_999,
+        10_000,
+        1_000_000,
+        999_999_999_999_999,
+    ];
 
     for &shares in share_configs {
         for &amount in amounts {
@@ -5893,10 +6030,12 @@ fn test_invariant_full_distribution_no_stranded_funds() {
     let share_configs: &[&[u32]] = &[
         &[10_000],
         &[5_000, 5_000],
-        &[3_334, 3_333, 3_333],            // rounding: 3334+3333+3333=10000
+        &[3_334, 3_333, 3_333], // rounding: 3334+3333+3333=10000
         &[2_500, 2_500, 2_500, 2_500],
         &[9_999, 1],
-        &[1_111, 1_111, 1_111, 1_111, 1_111, 1_111, 1_111, 1_111, 1_111, 1_001],
+        &[
+            1_111, 1_111, 1_111, 1_111, 1_111, 1_111, 1_111, 1_111, 1_111, 1_001,
+        ],
     ];
     // Amounts large enough that every collaborator receives at least 1 stroop.
     let amounts: &[i128] = &[10_000, 100_000, 1_000_000, 10_000_000_000_i128];
@@ -5938,7 +6077,9 @@ fn test_invariant_no_negative_payouts() {
         &[1, 9_999],
         &[9_999, 1],
         &[3_000, 3_000, 4_000],
-        &[1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000],
+        &[
+            1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000,
+        ],
     ];
     let amounts: &[i128] = &[10_000, 100_000, 1_000_000_000_i128];
 
@@ -5971,7 +6112,9 @@ fn test_invariant_shares_unchanged_after_distribution() {
         &[5_000, 5_000],
         &[3_000, 3_000, 4_000],
         &[9_999, 1],
-        &[1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000],
+        &[
+            1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000,
+        ],
     ];
 
     for &shares in share_configs {
@@ -6143,10 +6286,16 @@ fn test_global_pause_still_blocks_both_operations() {
     client.pause();
 
     let primary_result = client.try_distribute(&token);
-    assert_eq!(primary_result, Err(Ok(ContractError::ContractPaused.into())));
+    assert_eq!(
+        primary_result,
+        Err(Ok(ContractError::ContractPaused.into()))
+    );
 
     let secondary_result = client.try_distribute_secondary();
-    assert_eq!(secondary_result, Err(Ok(ContractError::ContractPaused.into())));
+    assert_eq!(
+        secondary_result,
+        Err(Ok(ContractError::ContractPaused.into()))
+    );
 
     client.unpause();
     client.distribute(&token);

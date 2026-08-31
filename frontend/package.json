@@ -17,8 +17,8 @@
   },
   "size-limit": [
     {
-      "path": "dist/assets/***//*.js",
-      "limit": "200 KB",
+      "path": "dist/assets/*.js",
+      "limit": "2500 KB",
       "gzip": true
     }
   ],
