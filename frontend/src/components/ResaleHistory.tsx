@@ -1,8 +1,8 @@
-import { useState, useEffect } from "react";
-import { api, SecondarySale } from "../api";
+import React, { useState } from "react";
+import { SecondarySale } from "../api";
 import "./ResaleHistory.css";
 import { formatNumber } from "../utils/format";
-
+import { useSecondarySales, useSecondaryDistributions } from "../hooks/queries/useSecondarySales";
 
 interface Props {
   contractId: string;
@@ -20,60 +20,26 @@ interface DistributionRecord {
 }
 
 export default function ResaleHistory({ contractId }: Props) {
-  const [sales, setSales] = useState<SecondarySale[]>([]);
-  const [distributions, setDistributions] = useState<DistributionRecord[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState<"sales" | "distributions">(
-    "sales",
-  );
+  const [activeTab, setActiveTab] = useState<"sales" | "distributions">("sales");
   const [salesOffset, setSalesOffset] = useState(0);
   const [distributionsOffset, setDistributionsOffset] = useState(0);
-  const [salesTotal, setSalesTotal] = useState(0);
-  const [distributionsTotal, setDistributionsTotal] = useState(0);
   const LIMIT = 10;
 
-  const loadData = async (offset: number) => {
-    if (!contractId) return;
+  // React Query hooks — cached and deduplicated (#832)
+  const salesQuery = useSecondarySales(contractId || undefined, LIMIT, salesOffset);
+  const distributionsQuery = useSecondaryDistributions(contractId || undefined, LIMIT, distributionsOffset);
 
-    setLoading(true);
-    try {
-      const [salesData, distributionsData] = await Promise.all([
-        api.getSecondarySales(contractId, LIMIT, offset),
-        api.getSecondaryRoyaltyDistributions(contractId, LIMIT, offset),
-      ]);
+  const sales: SecondarySale[] = salesQuery.data?.sales ?? [];
+  const salesTotal = salesQuery.data?.total ?? 0;
+  const distributions: DistributionRecord[] = (distributionsQuery.data?.distributions ?? []) as DistributionRecord[];
+  const distributionsTotal = distributionsQuery.data?.total ?? 0;
+  const loading = salesQuery.isLoading || distributionsQuery.isLoading;
 
-      setSales(salesData.sales || []);
-      setSalesTotal(salesData.total || 0);
-      
-      setDistributions(distributionsData.distributions || []);
-      setDistributionsTotal(distributionsData.total || 0);
-    } catch (err) {
-      console.error("Error loading resale history", err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // Reset offsets and reload when contract changes
-  useEffect(() => {
+  // Reset offsets when contract changes
+  React.useEffect(() => {
     setSalesOffset(0);
     setDistributionsOffset(0);
-    loadData(0);
   }, [contractId]);
-
-  // Reload when sales offset changes
-  useEffect(() => {
-    if (activeTab === "sales") {
-      loadData(salesOffset);
-    }
-  }, [salesOffset]);
-
-  // Reload when distributions offset changes
-  useEffect(() => {
-    if (activeTab === "distributions") {
-      loadData(distributionsOffset);
-    }
-  }, [distributionsOffset]);
 
   if (loading) {
     return (

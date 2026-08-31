@@ -8,6 +8,7 @@ import ValidationSummary, {
 } from "./ValidationSummary";
 import { useFormStatus } from "../hooks/useFormStatus";
 import { useRoyaltyDraft } from "../hooks/useRoyaltyDraft";
+import { RoyaltyPayoutPreview } from "./RoyaltyPayoutPreview";
 import {
   parseRoyaltyConfigImport,
   RoyaltyConfigImportError,
@@ -400,7 +401,7 @@ export default function InitializeForm({
         field: "address",
         message: `Collaborator ${i + 1}: wallet address is required.`,
       });
-    } else if (!isValidStellarAccountAddress(c.address)) {
+    } else if (!isValidAccountAddress(c.address)) {
       validationIssues.push({
         index: i,
         field: "address",
@@ -465,7 +466,7 @@ export default function InitializeForm({
     const nextErrors = collaborators.reduce<
       Record<number, { address?: string; basisPoints?: string }>
     >((acc, c, i) => {
-      if (!c.address || !isValidStellarAccountAddress(c.address)) {
+      if (!c.address || !isValidAccountAddress(c.address)) {
         acc[i] = {
           ...acc[i],
           address: "Must be a valid Stellar address (G..., 56 chars)",
@@ -793,6 +794,7 @@ export default function InitializeForm({
         <button
           className="btn-primary"
           onClick={submit}
+          aria-busy={loading}
           disabled={
             loading ||
             !allRowsCommitted ||
