@@ -6,18 +6,20 @@
 
 import { render, screen, fireEvent } from "@testing-library/react";
 import "@testing-library/jest-dom";
-import InitializeForm from "./InitializeForm";
+import { vi } from "vitest";
 
-jest.mock("../api");
-jest.mock("../stellar", () => ({
-  signAndSubmitTransaction: jest.fn(),
+vi.mock("../api");
+vi.mock("../stellar", () => ({
+  signAndSubmitTransaction: vi.fn(),
 }));
-jest.mock("../context/NetworkContext", () => ({
+vi.mock("../context/NetworkContext", () => ({
   useNetwork: () => ({
     network: "testnet",
     networkMismatch: false,
   }),
 }));
+
+import InitializeForm from "./InitializeForm";
 
 const VALID_ADDRESS_A = "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWNA";
 
@@ -26,7 +28,7 @@ function setup() {
     <InitializeForm
       contractId="CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
       walletAddress={VALID_ADDRESS_A}
-      onSuccess={jest.fn()}
+      onSuccess={vi.fn()}
     />,
   );
 }
@@ -58,8 +60,8 @@ describe("InitializeForm validation summary", () => {
     expect(status).toHaveTextContent(/issue/);
     expect(screen.getByText(/wallet address is required/i)).toBeInTheDocument();
     expect(
-      screen.getByText(/Percentage must be between 0 and 100/i),
-    ).toBeInTheDocument();
+      screen.getAllByText(/Percentage must be between 0 and 100/i).length,
+    ).toBeGreaterThan(0);
   });
 
   it("lists a share-total issue when percentages do not sum to 100%", () => {
@@ -103,7 +105,7 @@ describe("InitializeForm validation summary", () => {
       target: { value: "150" },
     });
 
-    fireEvent.click(screen.getByText(/must be a valid Stellar address/i));
+    fireEvent.click(screen.getByText(/wallet address is required/i));
 
     expect(screen.getByLabelText("Collaborator 1 wallet address")).toHaveFocus();
   });

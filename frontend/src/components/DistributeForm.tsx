@@ -486,7 +486,6 @@ export default function DistributeForm({
           data-testid="distribute-submit"
           disabled={loading || txLifecycle.isActive || exceedsBalance || !amount || !tokenIdValid || networkMismatch}
           aria-busy={loading || txLifecycle.isActive}
-          data-testid="distribute-submit"
         >
           {(loading || txLifecycle.isActive) && <span className="btn-spinner" aria-hidden="true" />}
           {loading || txLifecycle.isActive ? "Submitting…" : "Distribute funds"}
@@ -497,7 +496,6 @@ export default function DistributeForm({
           onClick={clearForm}
           data-testid="distribute-clear"
           disabled={loading || txLifecycle.isActive || (!tokenId && !amount && !draftPrompt)}
-          data-testid="distribute-clear"
         >
           Clear
         </button>

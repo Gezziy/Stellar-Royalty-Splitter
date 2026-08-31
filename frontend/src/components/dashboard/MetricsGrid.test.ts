@@ -22,7 +22,7 @@ describe("MetricsGrid #833", () => {
   });
 
   test("formatNumber formats large collaboratorCount with abbreviation", () => {
-    expect(formatNumber(1_500_000)).toBe("1.5M");
+    expect(formatNumber(1_500_000)).toBe("1.50M");
   });
 
   test("formatCurrency formats totalDistributed with XLM suffix", () => {

@@ -14,6 +14,20 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const setIsDark = useUIStore((s) => s.setIsDark);
 
   useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const saved = localStorage.getItem("theme");
+    if (saved) {
+      setIsDark(saved === "dark");
+      return;
+    }
+    if (typeof window.matchMedia === "function") {
+      setIsDark(window.matchMedia("(prefers-color-scheme: dark)").matches);
+    }
+  }, [setIsDark]);
+
+  useEffect(() => {
     document.documentElement.setAttribute("data-theme", isDark ? "dark" : "light");
   }, [isDark]);
 
@@ -39,11 +53,8 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
 export const useTheme = (): ThemeContextType => {
   const context = useContext(ThemeContext);
-  const isDark = useUIStore((s) => s.isDark);
-  const toggleTheme = useUIStore((s) => s.toggleTheme);
-
-  if (context) {
-    return context;
+  if (!context) {
+    throw new Error("useTheme must be used within ThemeProvider");
   }
-  return { isDark, toggleTheme };
+  return context;
 };

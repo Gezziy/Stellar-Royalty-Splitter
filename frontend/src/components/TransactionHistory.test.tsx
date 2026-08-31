@@ -218,9 +218,9 @@ describe("TransactionHistory filtering and search (#754)", () => {
     fireEvent.change(searchInput, { target: { value: "txhashaaa" } });
 
     await waitFor(() => {
-      expect(screen.getByText("txhashaaa".slice(0, 6), { exact: false })).toBeTruthy();
+      expect(screen.getByLabelText(/View transaction txhashaaa/i)).toBeTruthy();
     });
-    expect(screen.queryByText("txhashbbb".slice(0, 6), { exact: false })).toBeNull();
+    expect(screen.queryByLabelText(/View transaction txhashbbb/i)).toBeNull();
   });
 
   it("filters displayed rows by collaborator address search", async () => {

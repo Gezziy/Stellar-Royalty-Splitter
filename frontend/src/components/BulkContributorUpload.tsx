@@ -126,6 +126,7 @@ export function BulkContributorUpload({ contractId, onSuccess }: BulkContributor
           <input
             ref={fileInputRef}
             type="file"
+            aria-label="Upload CSV file"
             accept=".csv"
             onChange={handleFileSelect}
             style={{ display: "none" }}

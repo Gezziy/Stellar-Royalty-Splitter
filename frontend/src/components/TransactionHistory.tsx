@@ -1,5 +1,4 @@
 import { useState, useEffect } from "react";
-import { useQueryClient } from "@tanstack/react-query";
 import { api, TransactionRecord } from "../api";
 import "./TransactionHistory.css";
 import { formatNumber } from "../utils/format";
@@ -46,7 +45,6 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
   onSelectTxHash,
 }) => {
   const { network } = useNetwork();
-  const queryClient = useQueryClient();
   const [offset, setOffset] = useState(0);
   const [localSelectedTxHash, setLocalSelectedTxHash] = useState<string | null>(null);
 
@@ -95,6 +93,7 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
   const {
     data: historyData,
     isLoading: loading,
+    isFetching,
     isError,
     error: queryError,
     refetch,
@@ -103,6 +102,7 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
   const transactions: TransactionRecord[] = historyData?.data ?? [];
   const total = historyData?.pagination?.total ?? 0;
   const error = isError ? (queryError as Error)?.message ?? "Failed to fetch history" : null;
+  const refreshing = isFetching && !loading;
 
   const hasActiveFilters =
     filters.type !== "" ||
@@ -139,8 +139,8 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
         txHash: tx.txHash,
         text: result.message ?? "Status updated.",
       });
-      // Invalidate the cache so React Query refetches the updated status
-      void queryClient.invalidateQueries({ queryKey: ["txHistory", contractId] });
+      // Refetch through the active query hook so the visible table updates immediately.
+      void refetch();
     } catch (err) {
       // A failed refresh (including a Horizon polling timeout) means the
       // transaction's true status still isn't known — not that anything is
@@ -355,8 +355,8 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
           >
             ↓ Export CSV
           </button>
-          <button onClick={() => void refetch()} disabled={loading}>
-            {loading ? "Refreshing..." : "Refresh"}
+          <button onClick={() => void refetch()} disabled={loading || refreshing}>
+            {refreshing ? "Refreshing..." : "Refresh"}
           </button>
         </div>
       </div>
