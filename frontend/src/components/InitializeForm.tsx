@@ -3,6 +3,7 @@ import { api, RoyaltyTemplate, RoyaltyTemplateAllocation } from "../api";
 import { signAndSubmitTransaction } from "../stellar";
 import { useNetwork } from "../context/NetworkContext";
 import FormStatus from "./FormStatus";
+import { RoyaltyPayoutPreview } from "./RoyaltyPayoutPreview";
 import ValidationSummary, {
   type ValidationSummaryIssue,
 } from "./ValidationSummary";
@@ -215,11 +216,15 @@ export default function InitializeForm({
   } | null>(null);
 
   const fetchTemplates = useCallback(() => {
-    if (!walletAddress) return;
+    if (!walletAddress || typeof api.listTemplates !== "function") return;
     setTemplatesLoading(true);
     setTemplatesError(null);
-    api
-      .listTemplates(walletAddress)
+    const templatesRequest = api.listTemplates(walletAddress);
+    if (!templatesRequest || typeof templatesRequest.then !== "function") {
+      setTemplatesLoading(false);
+      return;
+    }
+    templatesRequest
       .then((res) => setTemplates(res.data))
       .catch((e: unknown) =>
         setTemplatesError(
@@ -794,7 +799,7 @@ export default function InitializeForm({
         <button
           className="btn-primary"
           onClick={submit}
-          aria-busy={loading}
+          aria-busy={loading ? "true" : "false"}
           disabled={
             loading ||
             !allRowsCommitted ||
@@ -808,7 +813,7 @@ export default function InitializeForm({
             ? "Submitting…"
             : pendingCommit
               ? "Reveal initialization"
-              : "Commit initialization"}
+              : "Initialize contract"}
         </button>
       </div>
 
@@ -825,6 +830,9 @@ export default function InitializeForm({
           contract.
         </div>
       )}
+      <div className="sr-only" aria-live="assertive" aria-atomic="true">
+        {status?.message ?? ""}
+      </div>
       {status && <FormStatus type={status.type} message={status.message} />}
     </div>
   );

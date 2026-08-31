@@ -24,8 +24,7 @@ const CONTRACT_WASM: &[u8] =
 
 fn setup(env: &Env) -> (Address, RoyaltySplitterClient<'_>) {
     env.budget().reset_unlimited();
-    let contract_id =
-        env.register_contract(None, stellar_royalty_splitter::RoyaltySplitter);
+    let contract_id = env.register_contract(None, stellar_royalty_splitter::RoyaltySplitter);
     let client = RoyaltySplitterClient::new(env, &contract_id);
     (contract_id, client)
 }

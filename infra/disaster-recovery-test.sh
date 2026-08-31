@@ -122,7 +122,8 @@ fail_with_guidance() {
 # ── Safety guards ────────────────────────────────────────────────────────────
 
 contains_production_marker() {
-  local value="${1,,}"
+  local value
+  value="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
   local marker
   for marker in "${PRODUCTION_MARKERS[@]}"; do
     if [[ "$value" == *"$marker"* ]]; then

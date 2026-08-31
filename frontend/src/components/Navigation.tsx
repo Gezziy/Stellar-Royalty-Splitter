@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { useTheme } from "../context/ThemeContext";
 import { useNetwork } from "../context/NetworkContext";
+import { useUIStore } from "../store/uiStore";
 import { NotificationBell } from "./NotificationBell";
 import "./Navigation.css";
 

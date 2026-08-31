@@ -1,5 +1,13 @@
-import React, { createContext, useContext, useState, useEffect } from "react";
-import i18n from "../i18n";
+import React, { createContext, useContext } from "react";
+import {
+  useSettingsStore,
+  type SettingsType as BaseSettingsType,
+} from "../store/settingsStore";
+import {
+  useContractsStore,
+  isValidContractId,
+  normalizeContractList,
+} from "../store/contractsStore";
 
 export { isValidContractId, normalizeContractList };
 
@@ -25,15 +33,6 @@ const DEFAULTS: SettingsType = {
   language: "en",
 };
 
-// A contract ID on Stellar starts with "C" and is 56 characters long.
-export function isValidContractId(id: string): boolean {
-  return id.startsWith("C") && id.length === 56;
-}
-
-export function normalizeContractList(contracts: string[]): string[] {
-  return Array.from(new Set(contracts.map((c) => c.trim()).filter(isValidContractId)));
-}
-
 const SettingsContext = createContext<SettingsContextType | undefined>(
   undefined,
 );
@@ -41,34 +40,15 @@ const SettingsContext = createContext<SettingsContextType | undefined>(
 export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({
   children,
 }) => {
-  const [settings, setSettings] = useState<SettingsType>(() => {
-    try {
-      const raw = localStorage.getItem("royaltySplitterSettings");
-      if (raw) return { ...DEFAULTS, ...JSON.parse(raw) };
-    } catch (_) {}
-    return DEFAULTS;
-  });
-
-  useEffect(() => {
-    // Persist settings whenever they change
-    try {
-      localStorage.setItem("royaltySplitterSettings", JSON.stringify(settings));
-    } catch (_) {}
-  }, [settings]);
-
-  useEffect(() => {
-    // Sync i18n language with settings language preference
-    if (settings.language && i18n.language !== settings.language) {
-      i18n.changeLanguage(settings.language);
-    }
-  }, [settings.language]);
-
-  const updateSettings = (patch: Partial<SettingsType>) =>
-    setSettings((s) => ({ ...s, ...patch }));
-
+  const baseSettings = useSettingsStore((s) => s.settings);
+  const updateSettings = useSettingsStore((s) => s.updateSettings);
+  const trackedContracts = useContractsStore((s) => s.trackedContracts);
+  const addTrackedContract = useContractsStore((s) => s.addTrackedContract);
+  const removeTrackedContract = useContractsStore((s) => s.removeTrackedContract);
   const settings: SettingsType = {
     ...baseSettings,
     trackedContracts,
+    language: "en",
   };
 
   return (

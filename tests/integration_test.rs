@@ -6,8 +6,8 @@ use soroban_sdk::{
     vec, Address, BytesN, Env, IntoVal, Map, String, TryFromVal, Val, Vec as SorobanVec,
 };
 use stellar_royalty_splitter::{
-    auth, ContractError, DataKey, OperationType, Recipient, RoyaltyRateChange,
-    RoyaltySplitterClient, StorageKey, MIN_TTL, RATE_HISTORY_CAP, VERSION,
+    auth, ContractError, DataKey, OperationProposal, OperationType, Recipient, RoyaltyRateChange,
+    RoyaltySplitterClient, SensitiveOperation, StorageKey, MIN_TTL, RATE_HISTORY_CAP, VERSION,
 };
 
 fn setup(env: &Env) -> (Address, RoyaltySplitterClient<'_>) {
