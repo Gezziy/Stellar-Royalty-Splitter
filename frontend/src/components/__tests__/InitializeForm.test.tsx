@@ -134,7 +134,7 @@ describe("InitializeForm — accessibility", () => {
     fireEvent.change(addrInput, { target: { value: WALLET } });
     fireEvent.change(pctInput, { target: { value: "100" } });
 
-    const submitBtn = screen.getByText(/Commit initialization/i);
+    const submitBtn = screen.getByText(/Initialize contract/i);
     fireEvent.click(submitBtn);
 
     await waitFor(() => {

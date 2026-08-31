@@ -40,7 +40,7 @@ export const FeatureErrorBoundary: FC<FeatureErrorBoundaryProps> = ({
               <button
                 onClick={handleRetry}
                 className="error-boundary-button error-boundary-button-primary"
-                aria-label="Retry loading this feature"
+                aria-label="Try Again"
               >
                 Try Again
               </button>

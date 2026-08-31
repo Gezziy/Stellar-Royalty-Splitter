@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useRef } from "react";
-import { useQueryClient } from "@tanstack/react-query";
 import { type SecondarySale } from "../api";
 import { useSettings } from "../context/SettingsContext";
+import { queryClient } from "../lib/queryClient";
 import { formatCurrency, formatNumber } from "../utils/format";
 import { isCollaborator } from "../utils/collaborators";
 import { CopyButton } from "./CopyButton";
@@ -71,7 +71,6 @@ export const EarningsDashboard: React.FC<EarningsDashboardProps> = ({
   walletAddress,
 }) => {
   const { settings } = useSettings();
-  const queryClient = useQueryClient();
 
   // Multi-contract support (#multi-contract-earnings): users can track
   // several contract IDs in Settings. The selector below switches between
@@ -106,14 +105,7 @@ export const EarningsDashboard: React.FC<EarningsDashboardProps> = ({
     selectedContract === ALL_CONTRACTS ? "" : selectedContract;
   const showComparison = selectedContract === ALL_CONTRACTS;
 
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [totalDistributed, setTotalDistributed] = useState<number>(0);
-  const [primaryTotal, setPrimaryTotal] = useState<number>(0);
-  const [secondaryTotal, setSecondaryTotal] = useState<number>(0);
   const [latestDistribution, setLatestDistribution] = useState<LiveDistribution | null>(null);
-  const [collaborators, setCollaborators] = useState<CollaboratorEarning[]>([]);
-  const [recentPayouts, setRecentPayouts] = useState<RecentPayout[]>([]);
   const [activeTab, setActiveTab] = useState<"all" | "primary" | "secondary">("all");
   const [searchQuery, setSearchQuery] = useState("");
 
@@ -122,8 +114,6 @@ export const EarningsDashboard: React.FC<EarningsDashboardProps> = ({
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
   const [exporting, setExporting] = useState<"pdf" | "csv" | "json" | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [activeTab, setActiveTab] = useState<"all" | "primary" | "secondary">("all");
 
   // React Query hooks — data is deduplicated, cached, and shared across components (#832)
   const analyticsQuery = useAnalytics(activeContract || undefined);
@@ -158,60 +148,18 @@ export const EarningsDashboard: React.FC<EarningsDashboardProps> = ({
     (event: DistributionEvent) => {
       if (event.contractId === activeContract) {
         handleRefresh();
-  const loadDashboardData = useCallback(async (showLoader = true) => {
-    if (!activeContract) {
-      setLoading(false);
-      return;
-    }
-
-    if (showLoader) setLoading(true);
-    setError(null);
-
-    try {
-      // Fetch analytics, collaborator shares, royalty stats, and transaction history in parallel
-      const [analyticsRes, collabRes, statsRes, historyRes, salesRes] = await Promise.allSettled([
-        api.getAnalytics(activeContract),
-        api.getCollaborators(activeContract),
-        api.getRoyaltyStats(activeContract),
-        api.getTransactionHistory(activeContract, 20, 0),
-        api.getSecondarySales(activeContract, 20, 0),
-      ]);
-
-      if (analyticsRes.status === "rejected" && collabRes.status === "rejected") {
-        setError("Failed to load earnings dashboard data. Please try again.");
-        return;
-      }
-
-      // Parse Analytics data
-      let totalDist = 0;
-      let primTotal = 0;
-      let secTotal = 0;
-      let collabStatsMap = new Map<string, {
-        totalEarned: number;
-        payoutCount: number;
-        avgPayout: number;
-        firstActivity: string | null;
-        lastActivity: string | null;
-      }>();
-
-      if (analyticsRes.status === "fulfilled" && analyticsRes.value.success) {
-        const data = analyticsRes.value.data;
-        totalDist = data.totalDistributed ?? 0;
-        primTotal = data.primaryRoyaltiesTotal ?? 0;
-        secTotal = data.secondaryRoyaltiesTotal ?? 0;
-
-        (data.collaboratorStats || []).forEach((c) => {
-          collabStatsMap.set(c.address, {
-            totalEarned: c.totalEarned,
-            payoutCount: c.payoutCount,
-            avgPayout: c.avgPayout ?? (c.payoutCount > 0 ? c.totalEarned / c.payoutCount : 0),
-            firstActivity: c.firstActivity ?? null,
-            lastActivity: c.lastActivity ?? null,
+        const amount = distributionAmount(event);
+        if (amount !== null) {
+          setLatestDistribution({
+            amount,
+            type: event.type,
+            transactionId: event.transactionId,
+            timestamp: event.timestamp,
           });
-        });
+        }
       }
     },
-    [activeContract], // eslint-disable-line react-hooks/exhaustive-deps
+    [activeContract],
   );
 
   // Connect to WebSocket for real-time distribution updates
@@ -240,41 +188,6 @@ export const EarningsDashboard: React.FC<EarningsDashboardProps> = ({
       });
     });
   }
-      // Combine Collaborator shares with earnings stats
-      let collabList: CollaboratorEarning[] = [];
-      if (collabRes.status === "fulfilled" && Array.isArray(collabRes.value)) {
-        collabList = collabRes.value.map((c) => {
-          const stats = collabStatsMap.get(c.address) || {
-            totalEarned: 0,
-            payoutCount: 0,
-            avgPayout: 0,
-            firstActivity: null,
-            lastActivity: null,
-          };
-          return {
-            address: c.address,
-            basisPoints: c.basisPoints,
-            totalEarned: stats.totalEarned,
-            payoutCount: stats.payoutCount,
-            avgPayout: stats.avgPayout,
-            firstActivity: stats.firstActivity,
-            lastActivity: stats.lastActivity,
-          };
-        });
-      } else if (collabStatsMap.size > 0) {
-        collabStatsMap.forEach((stats, addr) => {
-          collabList.push({
-            address: addr,
-            basisPoints: 0,
-            totalEarned: stats.totalEarned,
-            payoutCount: stats.payoutCount,
-            avgPayout: stats.avgPayout,
-            firstActivity: stats.firstActivity,
-            lastActivity: stats.lastActivity,
-          });
-        });
-      }
-
   // Fill secondary total from royalty stats if analytics didn't provide it
   if (!secondaryTotal && royaltyStatsQuery.data?.totalRoyaltiesGenerated) {
     const raw = royaltyStatsQuery.data.totalRoyaltiesGenerated;
@@ -345,52 +258,6 @@ export const EarningsDashboard: React.FC<EarningsDashboardProps> = ({
       (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
     );
   }, [txHistoryQuery.data, secondarySalesQuery.data]);
-      }
-
-      // Sort payouts descending by timestamp
-      payoutsList.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-
-      setTotalDistributed(totalDist);
-      setPrimaryTotal(primTotal);
-      setSecondaryTotal(secTotal);
-      setCollaborators(collabList);
-      setRecentPayouts(payoutsList);
-    } catch (err: unknown) {
-      console.error("Error loading earnings dashboard:", err);
-      setError("Failed to load earnings dashboard data. Please try again.");
-    } finally {
-      if (showLoader) setLoading(false);
-    }
-  }, [activeContract]);
-
-  useEffect(() => {
-    void loadDashboardData();
-  }, [loadDashboardData]);
-
-  // Handle distribution events for real-time earnings updates
-  const handleDistributionEvent = useCallback((event: DistributionEvent) => {
-    if (event.contractId !== activeContract) return;
-
-    const amount = distributionAmount(event);
-    if (amount !== null) {
-      setTotalDistributed((current) => current + amount);
-      if (event.type === "secondary_distribution_completed" || event.type === "secondary_sale_recorded") {
-        setSecondaryTotal((current) => current + amount);
-      } else {
-        setPrimaryTotal((current) => current + amount);
-      }
-      setLatestDistribution({
-        amount,
-        type: event.type,
-        transactionId: event.transactionId,
-        timestamp: event.timestamp,
-      });
-    }
-
-    // Reconcile collaborator rows and payout history in the background without
-    // replacing the visible dashboard with a loading skeleton.
-    void loadDashboardData(false);
-  }, [activeContract, loadDashboardData]);
 
   // ── Selectors ────────────────────────────────────────────────────────────
 

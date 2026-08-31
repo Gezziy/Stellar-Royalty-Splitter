@@ -61,6 +61,8 @@ if (
 import { vi } from "vitest";
 import enTranslations from "../i18n/locales/en.json";
 
+(globalThis as typeof globalThis & { jest: typeof vi }).jest = vi;
+
 vi.mock("react-i18next", () => {
   const translate = (key: string, options?: any) => {
     const parts = key.split(".");
@@ -105,81 +107,6 @@ vi.mock("../context/NotificationContext", () => ({
     deleteNotification: vi.fn(),
   }),
   NotificationProvider: ({ children }: any) => children,
-}));
-
-// ── React Query global mock (#832) ───────────────────────────────────────────
-// Component tests that render components importing React Query hooks need
-// either a QueryClientProvider wrapper or mocked hooks. We mock the entire
-// hooks/queries directory so tests that already mock the api.* functions
-// continue to work without any per-file changes.
-//
-// Each hook returns a standard React Query result shape:
-//   { data, isLoading, isError, error, refetch, isFetching }
-//
-// Individual tests that want to exercise loading/error states can override
-// these mocks with vi.mocked(...).mockReturnValue({ isLoading: true, ... }).
-
-vi.mock("../hooks/queries/useAnalytics", () => ({
-  useAnalytics: vi.fn(() => ({
-    data: undefined,
-    isLoading: false,
-    isError: false,
-    error: null,
-    isFetching: false,
-    refetch: vi.fn(),
-  })),
-}));
-
-vi.mock("../hooks/queries/useCollaborators", () => ({
-  useCollaborators: vi.fn(() => ({
-    data: undefined,
-    isLoading: false,
-    isError: false,
-    error: null,
-    isFetching: false,
-    refetch: vi.fn(),
-  })),
-}));
-
-vi.mock("../hooks/queries/useTransactionHistory", () => ({
-  useTransactionHistory: vi.fn(() => ({
-    data: undefined,
-    isLoading: false,
-    isError: false,
-    error: null,
-    isFetching: false,
-    refetch: vi.fn(),
-  })),
-}));
-
-vi.mock("../hooks/queries/useRoyaltyStats", () => ({
-  useRoyaltyStats: vi.fn(() => ({
-    data: undefined,
-    isLoading: false,
-    isError: false,
-    error: null,
-    isFetching: false,
-    refetch: vi.fn(),
-  })),
-}));
-
-vi.mock("../hooks/queries/useSecondarySales", () => ({
-  useSecondarySales: vi.fn(() => ({
-    data: undefined,
-    isLoading: false,
-    isError: false,
-    error: null,
-    isFetching: false,
-    refetch: vi.fn(),
-  })),
-  useSecondaryDistributions: vi.fn(() => ({
-    data: undefined,
-    isLoading: false,
-    isError: false,
-    error: null,
-    isFetching: false,
-    refetch: vi.fn(),
-  })),
 }));
 
 vi.mock("../hooks/queries/useHealth", () => ({

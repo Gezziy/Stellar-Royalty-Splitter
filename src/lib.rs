@@ -3,8 +3,8 @@ pub mod auth;
 mod storage;
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, token, xdr::ToXdr,
-    Address, BytesN, Env, IntoVal, Map, String, Symbol, Val, Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short, token, xdr::ToXdr, Address,
+    BytesN, Env, IntoVal, Map, String, Symbol, Val, Vec,
 };
 
 #[contracttype]
@@ -138,6 +138,37 @@ pub struct Proposal {
     pub rejected: bool,
 }
 
+/// Sensitive administrative operations subject to collaborative threshold approval (#894).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SensitiveOperation {
+    Pause,
+    Unpause,
+    PauseOperation(OperationType),
+    UnpauseOperation(OperationType),
+    TransferAdmin(Address),
+    SetRoyaltyRate(u32),
+    SetAnomalyThreshold(i128),
+    SetIncentivesEnabled(bool),
+    UpdateWasm(BytesN<32>),
+    SetApprovedTokens(Vec<Address>),
+}
+
+/// A proposal for executing a sensitive contract operation with multi-admin threshold approval (#894).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OperationProposal {
+    pub id: u64,
+    pub operation: SensitiveOperation,
+    pub proposer: Address,
+    pub created_at: u64,
+    pub deadline: u64,
+    pub threshold: u32,
+    pub approvals_count: u32,
+    pub executed: bool,
+    pub executed_at: u64,
+}
+
 /// A distribution operation record for historical tracking (#775).
 /// Stores per-token distribution details for on-chain audit.
 #[contracttype]
@@ -197,6 +228,7 @@ pub enum StorageKey {
     OracleConfig,
     MaxSecondaryPoolSize,
     ProposalCount,
+    OperationProposalCount,
     DistributionRecordCount,
     // Persistent storage
     ApprovedTokens,
@@ -204,6 +236,8 @@ pub enum StorageKey {
     DisputeCount,
     Proposals,
     ProposalVotes,
+    OperationProposals,
+    OperationProposalApprovals,
     Collaborators,
     ShareMap,
     DefaultRecipients,
@@ -216,6 +250,7 @@ pub enum StorageKey {
     MigrationMemo,
     ContributorJoinDate,
     ContributorActivityCount,
+    RecipientEarnings(Address, Address),
     DistributionRecords,
     PendingDistributions,
 }
@@ -367,10 +402,6 @@ pub enum ContractError {
     InvalidEmergencyPauseSigners = 48,
     InvalidEmergencyPauseThreshold = 49,
     UnauthorizedEmergencySigner = 50,
-    OracleNotConfigured = 51,
-    OracleUnavailable = 52,
-    OracleInvalid = 53,
-    SecondaryPoolLimitExceeded = 54,
 }
 
 #[contract]
@@ -443,6 +474,22 @@ impl RoyaltySplitter {
         Ok(result as i128)
     }
 
+    fn record_recipient_earnings(
+        env: &Env,
+        recipient: &Address,
+        token: &Address,
+        amount: i128,
+    ) -> Result<i128, ContractError> {
+        let key = StorageKey::RecipientEarnings(recipient.clone(), token.clone());
+        let current: i128 = storage::persistent_get::<i128>(env, &key).unwrap_or(0);
+        let new_total = current
+            .checked_add(amount)
+            .ok_or(ContractError::ArithmeticOverflow)?;
+        storage::persistent_set(env, &key, &new_total);
+        storage::extend_persistent_ttl_for(env, &key);
+        Ok(new_total)
+    }
+
     /// Resolve the effective recipient list for a distribution call: an
     /// explicit override, else the configured defaults, else the raw
     /// collaborator share map. Shared by every distribution entry point so
@@ -486,7 +533,10 @@ impl RoyaltySplitter {
 
         let mut payouts = Vec::new(env);
         let mut total_calculated: i128 = 0;
-        let last_index = recipients.len() - 1;
+        let last_index = recipients
+            .len()
+            .checked_sub(1)
+            .ok_or(ContractError::AmountTooSmall)?;
         for index in 0..recipients.len() {
             let recipient = recipients.get(index).unwrap_optimized();
             let payout = if index == last_index {
@@ -836,7 +886,7 @@ impl RoyaltySplitter {
         storage::extend_instance_ttl(&env);
         Self::check_admin_auth(&env, "set_royalty_oracle: admin authorization required");
         if update_frequency == 0 || max_staleness == 0 {
-            return Err(ContractError::OracleInvalid);
+            return Err(ContractError::InvalidBasisPoints);
         }
         storage::instance_set(
             &env,
@@ -870,7 +920,7 @@ impl RoyaltySplitter {
             .storage()
             .instance()
             .get(&StorageKey::OracleConfig)
-            .ok_or(ContractError::OracleNotConfigured)?;
+            .ok_or(ContractError::NotInitialized)?;
 
         let decimals: u32 = env
             .try_invoke_contract::<u32, soroban_sdk::InvokeError>(
@@ -878,8 +928,8 @@ impl RoyaltySplitter {
                 &symbol_short!("decimals"),
                 Vec::new(&env),
             )
-            .map_err(|_| ContractError::OracleUnavailable)?
-            .map_err(|_| ContractError::OracleUnavailable)?;
+            .map_err(|_| ContractError::NoBalance)?
+            .map_err(|_| ContractError::NoBalance)?;
 
         let asset_val: Val = config.asset.clone().into_val(&env);
         let mut args = Vec::new(&env);
@@ -890,27 +940,30 @@ impl RoyaltySplitter {
                 &symbol_short!("lastprice"),
                 args,
             )
-            .map_err(|_| ContractError::OracleUnavailable)?
-            .map_err(|_| ContractError::OracleUnavailable)?;
-        let quote = quote.ok_or(ContractError::OracleUnavailable)?;
+            .map_err(|_| ContractError::NoBalance)?
+            .map_err(|_| ContractError::NoBalance)?;
+        let quote = quote.ok_or(ContractError::NoBalance)?;
 
         let now = env.ledger().timestamp();
-        if quote.timestamp > now || now - quote.timestamp > config.max_staleness {
-            return Err(ContractError::OracleUnavailable);
+        let quote_age = now
+            .checked_sub(quote.timestamp)
+            .ok_or(ContractError::NoBalance)?;
+        if quote_age > config.max_staleness {
+            return Err(ContractError::NoBalance);
         }
         if quote.price <= 0 || decimals > 18 {
-            return Err(ContractError::OracleInvalid);
+            return Err(ContractError::InvalidBasisPoints);
         }
 
         let divisor = 10_i128
             .checked_pow(decimals)
-            .ok_or(ContractError::OracleInvalid)?;
+            .ok_or(ContractError::InvalidBasisPoints)?;
         let rate = quote
             .price
             .checked_div(divisor)
-            .ok_or(ContractError::OracleInvalid)?;
+            .ok_or(ContractError::InvalidBasisPoints)?;
         if rate <= 0 || rate > 10_000 {
-            return Err(ContractError::OracleInvalid);
+            return Err(ContractError::InvalidBasisPoints);
         }
         Ok(rate as u32)
     }
@@ -925,11 +978,12 @@ impl RoyaltySplitter {
             .storage()
             .instance()
             .get(&StorageKey::OracleConfig)
-            .ok_or(ContractError::OracleNotConfigured)?;
+            .ok_or(ContractError::NotInitialized)?;
 
         let now = env.ledger().timestamp();
-        if config.last_updated != 0 && now - config.last_updated < config.update_frequency {
-            return Err(ContractError::OracleUnavailable);
+        let elapsed_since_update = now.saturating_sub(config.last_updated);
+        if config.last_updated != 0 && elapsed_since_update < config.update_frequency {
+            return Err(ContractError::NoBalance);
         }
 
         let rate = Self::fetch_royalty_rate_from_oracle(env.clone())?;
@@ -1285,9 +1339,19 @@ impl RoyaltySplitter {
 
         for (addr, payout) in payouts.iter() {
             token_client.transfer(&env.current_contract_address(), &addr, &payout);
+            let total_earned = Self::record_recipient_earnings(&env, &addr, &token, payout)?;
             env.events().publish(
                 (symbol_short!("royalty"), symbol_short!("dist")),
-                (addr, payout, token.clone(), symbol_short!("primary")),
+                (
+                    addr.clone(),
+                    payout,
+                    token.clone(),
+                    symbol_short!("primary"),
+                ),
+            );
+            env.events().publish(
+                (symbol_short!("royalty"), symbol_short!("earned")),
+                (addr, token.clone(), payout, total_earned),
             );
         }
 
@@ -1332,7 +1396,7 @@ impl RoyaltySplitter {
 
         env.events().publish(
             (symbol_short!("royalty"), symbol_short!("dist_strt")),
-            (token.clone(), amount, n as u32),
+            (token.clone(), amount, n),
         );
 
         let mut failed: Vec<Address> = Vec::new(&env);
@@ -1342,10 +1406,12 @@ impl RoyaltySplitter {
         for (addr, payout) in payouts.iter() {
             match token_client.try_transfer(&env.current_contract_address(), &addr, &payout) {
                 Ok(Ok(())) => {
-                    succeeded += 1;
+                    succeeded = succeeded.saturating_add(1);
                     distributed = distributed
                         .checked_add(payout)
                         .ok_or(ContractError::ArithmeticOverflow)?;
+                    let total_earned =
+                        Self::record_recipient_earnings(&env, &addr, &token, payout)?;
                     env.events().publish(
                         (symbol_short!("royalty"), symbol_short!("dist")),
                         (
@@ -1354,6 +1420,10 @@ impl RoyaltySplitter {
                             token.clone(),
                             symbol_short!("primary"),
                         ),
+                    );
+                    env.events().publish(
+                        (symbol_short!("royalty"), symbol_short!("earned")),
+                        (addr.clone(), token.clone(), payout, total_earned),
                     );
                 }
                 _ => {
@@ -1494,9 +1564,14 @@ impl RoyaltySplitter {
 
             for (addr, payout) in payouts.iter() {
                 token_client.transfer(&env.current_contract_address(), &addr, &payout);
+                let total_earned = Self::record_recipient_earnings(&env, &addr, &token, payout)?;
                 env.events().publish(
                     (symbol_short!("royalty"), symbol_short!("dist")),
-                    (addr, payout, token.clone(), symbol_short!("batch")),
+                    (addr.clone(), payout, token.clone(), symbol_short!("batch")),
+                );
+                env.events().publish(
+                    (symbol_short!("royalty"), symbol_short!("earned")),
+                    (addr, token.clone(), payout, total_earned),
                 );
             }
 
@@ -1552,7 +1627,7 @@ impl RoyaltySplitter {
             .get(&StorageKey::MaxSecondaryPoolSize)
             .unwrap_or(MAX_SECONDARY_POOL_SIZE);
         if new_pool > max_pool {
-            return Err(ContractError::SecondaryPoolLimitExceeded);
+            return Err(ContractError::PoolExceedsBalance);
         }
 
         let token_client = token::Client::new(&env, &token);
@@ -1591,7 +1666,16 @@ impl RoyaltySplitter {
 
     fn pool_warning_threshold(max_pool: i128) -> i128 {
         // 80% of the cap, computed without risking overflow on very large caps.
-        (max_pool / 100) * 80 + ((max_pool % 100) * 80 / 100)
+        let whole = max_pool
+            .checked_div(100)
+            .and_then(|value| value.checked_mul(80))
+            .unwrap_or(i128::MAX);
+        let fractional = max_pool
+            .checked_rem(100)
+            .and_then(|value| value.checked_mul(80))
+            .and_then(|value| value.checked_div(100))
+            .unwrap_or(0);
+        whole.saturating_add(fractional)
     }
 
     pub fn get_max_secondary_pool_size(env: Env) -> i128 {
@@ -1607,7 +1691,10 @@ impl RoyaltySplitter {
     /// with no way for `record_secondary_royalty` to explain it).
     pub fn set_max_secondary_pool_size(env: Env, new_limit: i128) -> Result<(), ContractError> {
         storage::extend_instance_ttl(&env);
-        Self::check_admin_auth(&env, "set_max_secondary_pool_size: admin authorization required");
+        Self::check_admin_auth(
+            &env,
+            "set_max_secondary_pool_size: admin authorization required",
+        );
 
         if new_limit <= 0 {
             return Err(ContractError::AmountNotPositive);
@@ -1615,7 +1702,7 @@ impl RoyaltySplitter {
 
         let current_pool = Self::get_secondary_pool(env.clone());
         if new_limit < current_pool {
-            return Err(ContractError::SecondaryPoolLimitExceeded);
+            return Err(ContractError::PoolExceedsBalance);
         }
 
         storage::instance_set(&env, &StorageKey::MaxSecondaryPoolSize, &new_limit);
@@ -1676,7 +1763,8 @@ impl RoyaltySplitter {
         let mut payouts: Vec<(Address, i128)> = Vec::new(&env);
         let mut total_calculated: i128 = 0;
 
-        for i in 0..(n - 1) {
+        let last_index = n.checked_sub(1).ok_or(ContractError::NoCollaborators)?;
+        for i in 0..last_index {
             let addr = collaborators.get(i).unwrap_optimized();
             let share = share_map.get(addr.clone()).unwrap_or(0);
             let payout = Self::checked_bps_amount(&env, pool, share)?;
@@ -1686,7 +1774,7 @@ impl RoyaltySplitter {
                 .ok_or(ContractError::ArithmeticOverflow)?;
         }
 
-        let last = collaborators.get(n - 1).unwrap();
+        let last = collaborators.get(last_index).unwrap();
         payouts.push_back((
             last,
             pool.checked_sub(total_calculated)
@@ -1707,9 +1795,19 @@ impl RoyaltySplitter {
 
         for (addr, payout) in payouts.iter() {
             token_client.transfer(&env.current_contract_address(), &addr, &payout);
+            let total_earned = Self::record_recipient_earnings(&env, &addr, &token, payout)?;
             env.events().publish(
                 (symbol_short!("royalty"), symbol_short!("sec_pay")),
-                (addr, payout, token.clone(), symbol_short!("secondary")),
+                (
+                    addr.clone(),
+                    payout,
+                    token.clone(),
+                    symbol_short!("secondary"),
+                ),
+            );
+            env.events().publish(
+                (symbol_short!("royalty"), symbol_short!("earned")),
+                (addr, token.clone(), payout, total_earned),
             );
         }
 
@@ -1718,13 +1816,7 @@ impl RoyaltySplitter {
             (token.clone(), pool),
         );
 
-        Self::record_distribution(
-            &env,
-            token,
-            pool,
-            n,
-            &String::from_str(&env, "completed"),
-        )?;
+        Self::record_distribution(&env, token, pool, n, &String::from_str(&env, "completed"))?;
         Ok(())
     }
 
@@ -1911,7 +2003,7 @@ impl RoyaltySplitter {
         if threshold < 1 {
             panic!("threshold must be at least 1");
         }
-        if threshold > admins.len() as u32 {
+        if threshold > admins.len() {
             panic!("threshold > admin count");
         }
 
@@ -2039,19 +2131,33 @@ impl RoyaltySplitter {
             let scaled = if total_bonus == effective_total {
                 raw
             } else {
-                ((raw as u64) * (effective_total as u64) / (total_bonus as u64)) as u32
+                let numerator = (raw as u64)
+                    .checked_mul(effective_total as u64)
+                    .expect("scaled incentive numerator overflow");
+                numerator
+                    .checked_div(total_bonus as u64)
+                    .expect("validated nonzero total bonus") as u32
             };
             scaled_bonuses.push_back(scaled);
             scaled_sum = scaled_sum.saturating_add(scaled);
         }
 
-        let pool_bps = 10_000u32 - scaled_sum;
+        let pool_bps = 10_000u32
+            .checked_sub(scaled_sum)
+            .expect("scaled incentives cannot exceed 10000 bps");
 
         let mut adjusted: Vec<Recipient> = Vec::new(&env);
         let mut assigned_total: u32 = 0;
-        for i in 0..(n - 1) {
+        let last_index = n
+            .checked_sub(1)
+            .expect("validated non-empty incentive recipients");
+        for i in 0..last_index {
             let r = base.get(i).unwrap();
-            let shrunk_base = ((r.share as u64) * (pool_bps as u64) / 10_000) as u32;
+            let shrunk_base = (r.share as u64)
+                .checked_mul(pool_bps as u64)
+                .and_then(|value| value.checked_div(10_000))
+                .expect("basis point shrink calculation overflow")
+                as u32;
             let new_share = shrunk_base.saturating_add(scaled_bonuses.get(i).unwrap());
             assigned_total = assigned_total.saturating_add(new_share);
             adjusted.push_back(Recipient {
@@ -2060,7 +2166,7 @@ impl RoyaltySplitter {
             });
         }
 
-        let last = base.get(n - 1).unwrap();
+        let last = base.get(last_index).unwrap();
         let last_share = 10_000u32
             .checked_sub(assigned_total)
             .expect("arithmetic overflow in incentive adjustment");
@@ -2122,9 +2228,19 @@ impl RoyaltySplitter {
 
         for (addr, payout) in payouts.iter() {
             token_client.transfer(&env.current_contract_address(), &addr, &payout);
+            let total_earned = Self::record_recipient_earnings(&env, &addr, &token, payout)?;
             env.events().publish(
                 (symbol_short!("royalty"), symbol_short!("dist")),
-                (addr, payout, token.clone(), symbol_short!("primary")),
+                (
+                    addr.clone(),
+                    payout,
+                    token.clone(),
+                    symbol_short!("primary"),
+                ),
+            );
+            env.events().publish(
+                (symbol_short!("royalty"), symbol_short!("earned")),
+                (addr, token.clone(), payout, total_earned),
             );
         }
 
@@ -2226,7 +2342,7 @@ impl RoyaltySplitter {
 
         Self::check_admin_auth(&env, auth::msg::SET_ADMIN_ROTATION_TIMELOCK_ADMIN);
 
-        if seconds < MIN_ADMIN_ROTATION_TIMELOCK || seconds > MAX_ADMIN_ROTATION_TIMELOCK {
+        if !(MIN_ADMIN_ROTATION_TIMELOCK..=MAX_ADMIN_ROTATION_TIMELOCK).contains(&seconds) {
             panic!("invalid timelock duration");
         }
 
@@ -2322,7 +2438,7 @@ impl RoyaltySplitter {
         if signers.len() > MAX_EMERGENCY_PAUSE_SIGNERS {
             return Err(ContractError::InputTooLarge);
         }
-        if threshold < 1 || threshold > signers.len() as u32 {
+        if threshold < 1 || threshold > signers.len() {
             return Err(ContractError::InvalidEmergencyPauseThreshold);
         }
 
@@ -2434,8 +2550,10 @@ impl RoyaltySplitter {
         Self::check_admin_auth(&env, auth::msg::TRIGGER_EMERGENCY_PAUSE_ADMIN);
         storage::instance_set(&env, &StorageKey::EmergencyPaused, &true);
         storage::instance_set(&env, &StorageKey::Paused, &true);
-        env.events()
-            .publish((symbol_short!("royalty"), symbol_short!("emrg_set")), reason);
+        env.events().publish(
+            (symbol_short!("royalty"), symbol_short!("emrg_set")),
+            reason,
+        );
     }
 
     pub fn clear_emergency_pause(env: Env) {
@@ -2523,7 +2641,7 @@ impl RoyaltySplitter {
     }
 
     fn validate_default_rcpt_bps(
-        env: &Env,
+        _env: &Env,
         recipients: &Vec<Recipient>,
     ) -> Result<(), ContractError> {
         for i in 0..recipients.len() {
@@ -2656,8 +2774,10 @@ impl RoyaltySplitter {
         let mut disputes: Map<u64, Dispute> =
             storage::persistent_get::<Map<u64, Dispute>>(&env, &StorageKey::Disputes)
                 .unwrap_or(Map::new(&env));
-        let next_id: u64 =
-            storage::persistent_get::<u64>(&env, &StorageKey::DisputeCount).unwrap_or(0) + 1;
+        let next_id: u64 = storage::persistent_get::<u64>(&env, &StorageKey::DisputeCount)
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or(ContractError::ArithmeticOverflow)?;
 
         let dispute = Dispute {
             transaction_id,
@@ -2789,13 +2909,15 @@ impl RoyaltySplitter {
         if new_rate > 10_000 {
             return Err(ContractError::RoyaltyRateTooHigh);
         }
-        if duration < MIN_PROPOSAL_DURATION || duration > MAX_PROPOSAL_DURATION {
+        if !(MIN_PROPOSAL_DURATION..=MAX_PROPOSAL_DURATION).contains(&duration) {
             return Err(ContractError::InvalidProposalDuration);
         }
 
         let now = env.ledger().timestamp();
-        let id: u64 =
-            storage::instance_get::<u64>(&env, &StorageKey::ProposalCount).unwrap_or(0) + 1;
+        let id: u64 = storage::instance_get::<u64>(&env, &StorageKey::ProposalCount)
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or(ContractError::ArithmeticOverflow)?;
 
         let proposal = Proposal {
             id,
@@ -2963,11 +3085,8 @@ impl RoyaltySplitter {
     // ─────────────────────────────────────────────────────────────────────
     // #775 — Distribution history & pending amounts
     //
-    // Every successful distribution path (`distribute_with_override`,
-    // `distribute_resilient`, `batch_distribute`, `distribute_secondary`,
-    // `distribute_with_incentives`) appends a `DistributionRecord` here for
-    // on-chain audit, and clears the per-token pending amount to 0 since
-    // this contract pays out immediately rather than accumulating a queue.
+    // Every successful distribution path appends a `DistributionRecord` here
+    // for on-chain audit, and clears the per-token pending amount to 0.
     // ─────────────────────────────────────────────────────────────────────
 
     fn record_distribution(
@@ -3020,7 +3139,8 @@ impl RoyaltySplitter {
 
         let limit = u32::min(limit, DISTRIBUTION_HISTORY_PAGE_SIZE);
         let records: Vec<DistributionRecord> =
-            storage::persistent_get(&env, &StorageKey::DistributionRecords).unwrap_or(Vec::new(&env));
+            storage::persistent_get(&env, &StorageKey::DistributionRecords)
+                .unwrap_or(Vec::new(&env));
 
         if offset >= records.len() {
             return Ok(Vec::new(&env));
@@ -3047,7 +3167,8 @@ impl RoyaltySplitter {
     pub fn get_pending_amount(env: Env, token: Address) -> i128 {
         storage::extend_instance_ttl(&env);
         let pending: Vec<PendingDistribution> =
-            storage::persistent_get(&env, &StorageKey::PendingDistributions).unwrap_or(Vec::new(&env));
+            storage::persistent_get(&env, &StorageKey::PendingDistributions)
+                .unwrap_or(Vec::new(&env));
         for record in pending.iter() {
             if record.token == token {
                 return record.pending_amount;
@@ -3063,7 +3184,8 @@ impl RoyaltySplitter {
         recipient_count: u32,
     ) -> Result<(), ContractError> {
         let mut pending: Vec<PendingDistribution> =
-            storage::persistent_get(env, &StorageKey::PendingDistributions).unwrap_or(Vec::new(env));
+            storage::persistent_get(env, &StorageKey::PendingDistributions)
+                .unwrap_or(Vec::new(env));
 
         let mut found = false;
         for i in 0..pending.len() {
@@ -3089,6 +3211,409 @@ impl RoyaltySplitter {
 
         storage::persistent_set(env, &StorageKey::PendingDistributions, &pending);
         Ok(())
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // #894 — Collaborative signing & threshold approval for sensitive operations
+    // ─────────────────────────────────────────────────────────────────────
+
+    fn is_authorized_admin(env: &Env, signer: &Address) -> bool {
+        let admin_list: Option<Vec<Address>> = env.storage().instance().get(&StorageKey::AdminList);
+        if let Some(admins) = admin_list {
+            if !admins.is_empty() {
+                for i in 0..admins.len() {
+                    if admins.get(i).unwrap() == *signer {
+                        return true;
+                    }
+                }
+                return false;
+            }
+        }
+        if let Some(admin) = env
+            .storage()
+            .instance()
+            .get::<StorageKey, Address>(&StorageKey::Admin)
+        {
+            return admin == *signer;
+        }
+        false
+    }
+
+    fn get_current_threshold(env: &Env) -> u32 {
+        let admin_list: Option<Vec<Address>> = env.storage().instance().get(&StorageKey::AdminList);
+        if let Some(admins) = admin_list {
+            if !admins.is_empty() {
+                return env
+                    .storage()
+                    .instance()
+                    .get(&StorageKey::AdminThreshold)
+                    .unwrap_or(1);
+            }
+        }
+        1
+    }
+
+    fn execute_sensitive_operation(
+        env: &Env,
+        operation: &SensitiveOperation,
+    ) -> Result<(), ContractError> {
+        match operation {
+            SensitiveOperation::Pause => {
+                storage::instance_set(env, &StorageKey::Paused, &true);
+                env.events()
+                    .publish((symbol_short!("royalty"), symbol_short!("paused")), ());
+            }
+            SensitiveOperation::Unpause => {
+                storage::instance_set(env, &StorageKey::Paused, &false);
+                env.events()
+                    .publish((symbol_short!("royalty"), symbol_short!("unpaused")), ());
+            }
+            SensitiveOperation::PauseOperation(op) => {
+                match op {
+                    OperationType::PrimaryDistribution => {
+                        storage::instance_set(env, &StorageKey::PausedPrimary, &true);
+                    }
+                    OperationType::SecondaryDistribution => {
+                        storage::instance_set(env, &StorageKey::PausedSecondary, &true);
+                    }
+                }
+                env.events().publish(
+                    (symbol_short!("royalty"), symbol_short!("op_paused")),
+                    *op as u32,
+                );
+            }
+            SensitiveOperation::UnpauseOperation(op) => {
+                match op {
+                    OperationType::PrimaryDistribution => {
+                        storage::instance_set(env, &StorageKey::PausedPrimary, &false);
+                    }
+                    OperationType::SecondaryDistribution => {
+                        storage::instance_set(env, &StorageKey::PausedSecondary, &false);
+                    }
+                }
+                env.events().publish(
+                    (symbol_short!("royalty"), symbol_short!("op_unpaus")),
+                    *op as u32,
+                );
+            }
+            SensitiveOperation::TransferAdmin(new_admin) => {
+                storage::instance_set(env, &StorageKey::Admin, new_admin);
+                env.events().publish(
+                    (symbol_short!("royalty"), symbol_short!("adm_trf")),
+                    new_admin.clone(),
+                );
+            }
+            SensitiveOperation::SetRoyaltyRate(new_rate) => {
+                if *new_rate > 10_000 {
+                    return Err(ContractError::RoyaltyRateTooHigh);
+                }
+                let old_rate: u32 =
+                    storage::instance_get::<u32>(env, &StorageKey::RoyaltyRate).unwrap_or(0);
+                storage::instance_set(env, &StorageKey::RoyaltyRate, new_rate);
+                let now = env.ledger().timestamp();
+                let caller = env
+                    .storage()
+                    .instance()
+                    .get::<StorageKey, Address>(&StorageKey::Admin)
+                    .unwrap_or(env.current_contract_address());
+                let entry = RoyaltyRateChange {
+                    old_rate,
+                    new_rate: *new_rate,
+                    timestamp: now,
+                    caller,
+                };
+                let mut history: Vec<RoyaltyRateChange> =
+                    storage::persistent_get(env, &StorageKey::RoyaltyRateHistory)
+                        .unwrap_or(Vec::new(env));
+                if history.len() >= RATE_HISTORY_CAP {
+                    history.pop_front();
+                }
+                history.push_back(entry);
+                storage::persistent_set(env, &StorageKey::RoyaltyRateHistory, &history);
+                env.events().publish(
+                    (symbol_short!("royalty"), symbol_short!("rate_set")),
+                    (old_rate, *new_rate),
+                );
+            }
+            SensitiveOperation::SetAnomalyThreshold(new_threshold) => {
+                if *new_threshold < 0 {
+                    return Err(ContractError::InvalidAnomalyThreshold);
+                }
+                storage::instance_set(env, &StorageKey::AnomalyThreshold, new_threshold);
+                env.events().publish(
+                    (symbol_short!("royalty"), symbol_short!("anom_set")),
+                    *new_threshold,
+                );
+            }
+            SensitiveOperation::SetIncentivesEnabled(enabled) => {
+                storage::instance_set(env, &StorageKey::IncentivesEnabled, enabled);
+                env.events().publish(
+                    (symbol_short!("royalty"), symbol_short!("incn_set")),
+                    *enabled,
+                );
+            }
+            SensitiveOperation::UpdateWasm(wasm_hash) => {
+                env.deployer()
+                    .update_current_contract_wasm(wasm_hash.clone());
+                env.events().publish(
+                    (symbol_short!("royalty"), symbol_short!("upgraded")),
+                    wasm_hash.clone(),
+                );
+            }
+            SensitiveOperation::SetApprovedTokens(tokens) => {
+                if tokens.len() > MAX_APPROVED_TOKENS {
+                    return Err(ContractError::InputTooLarge);
+                }
+                let mut seen: Vec<Address> = Vec::new(env);
+                for i in 0..tokens.len() {
+                    let tok = tokens.get(i).unwrap();
+                    for j in 0..seen.len() {
+                        if seen.get(j).unwrap() == tok {
+                            return Err(ContractError::DuplicateRecipient);
+                        }
+                    }
+                    seen.push_back(tok);
+                }
+                storage::persistent_set(env, &StorageKey::ApprovedTokens, tokens);
+                env.events().publish(
+                    (symbol_short!("royalty"), symbol_short!("toks_set")),
+                    tokens.len(),
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Proposes a sensitive operation for collaborative threshold approval (#894).
+    pub fn propose_operation(
+        env: Env,
+        proposer: Address,
+        operation: SensitiveOperation,
+        duration: u64,
+    ) -> Result<u64, ContractError> {
+        storage::extend_instance_ttl(&env);
+        auth::require_admin(&env, &proposer, auth::msg::PROPOSE_OPERATION_ADMIN);
+
+        if !Self::is_authorized_admin(&env, &proposer) {
+            return Err(ContractError::UnauthorizedEmergencySigner);
+        }
+
+        if !(MIN_PROPOSAL_DURATION..=MAX_PROPOSAL_DURATION).contains(&duration) {
+            return Err(ContractError::InvalidProposalDuration);
+        }
+
+        // Validate operation parameters early
+        match &operation {
+            SensitiveOperation::SetRoyaltyRate(rate) => {
+                if *rate > 10_000 {
+                    return Err(ContractError::RoyaltyRateTooHigh);
+                }
+            }
+            SensitiveOperation::SetAnomalyThreshold(threshold) => {
+                if *threshold < 0 {
+                    return Err(ContractError::InvalidAnomalyThreshold);
+                }
+            }
+            SensitiveOperation::SetApprovedTokens(tokens) => {
+                if tokens.len() > MAX_APPROVED_TOKENS {
+                    return Err(ContractError::InputTooLarge);
+                }
+                let mut seen: Vec<Address> = Vec::new(&env);
+                for i in 0..tokens.len() {
+                    let tok = tokens.get(i).unwrap();
+                    for j in 0..seen.len() {
+                        if seen.get(j).unwrap() == tok {
+                            return Err(ContractError::DuplicateRecipient);
+                        }
+                    }
+                    seen.push_back(tok);
+                }
+            }
+            _ => {}
+        }
+
+        let now = env.ledger().timestamp();
+        let id: u64 = storage::instance_get::<u64>(&env, &StorageKey::OperationProposalCount)
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or(ContractError::ArithmeticOverflow)?;
+        let threshold = Self::get_current_threshold(&env);
+
+        let mut proposal = OperationProposal {
+            id,
+            operation: operation.clone(),
+            proposer: proposer.clone(),
+            created_at: now,
+            deadline: now.saturating_add(duration),
+            threshold,
+            approvals_count: 1,
+            executed: false,
+            executed_at: 0,
+        };
+
+        let mut approvals: Vec<Address> = Vec::new(&env);
+        approvals.push_back(proposer.clone());
+
+        // If threshold is 1 (e.g. single admin or 1-of-N), execute immediately
+        if threshold <= 1 {
+            Self::execute_sensitive_operation(&env, &operation)?;
+            proposal.executed = true;
+            proposal.executed_at = now;
+            env.events().publish(
+                (symbol_short!("op_prop"), symbol_short!("executed")),
+                (id, now),
+            );
+        }
+
+        let mut proposals: Map<u64, OperationProposal> = storage::persistent_get::<
+            Map<u64, OperationProposal>,
+        >(
+            &env, &StorageKey::OperationProposals
+        )
+        .unwrap_or(Map::new(&env));
+        proposals.set(id, proposal);
+        storage::persistent_set(&env, &StorageKey::OperationProposals, &proposals);
+
+        let mut all_approvals: Map<u64, Vec<Address>> =
+            storage::persistent_get::<Map<u64, Vec<Address>>>(
+                &env,
+                &StorageKey::OperationProposalApprovals,
+            )
+            .unwrap_or(Map::new(&env));
+        all_approvals.set(id, approvals);
+        storage::persistent_set(
+            &env,
+            &StorageKey::OperationProposalApprovals,
+            &all_approvals,
+        );
+
+        storage::instance_set(&env, &StorageKey::OperationProposalCount, &id);
+
+        env.events().publish(
+            (symbol_short!("op_prop"), symbol_short!("created")),
+            (id, threshold, now.saturating_add(duration)),
+        );
+        Ok(id)
+    }
+
+    /// Approves an open operation proposal (#894). Executes the operation once threshold is reached.
+    pub fn approve_operation(
+        env: Env,
+        approver: Address,
+        proposal_id: u64,
+    ) -> Result<bool, ContractError> {
+        storage::extend_instance_ttl(&env);
+        auth::require_admin(&env, &approver, auth::msg::APPROVE_OPERATION_ADMIN);
+
+        if !Self::is_authorized_admin(&env, &approver) {
+            return Err(ContractError::UnauthorizedEmergencySigner);
+        }
+
+        let mut proposals: Map<u64, OperationProposal> = storage::persistent_get::<
+            Map<u64, OperationProposal>,
+        >(
+            &env, &StorageKey::OperationProposals
+        )
+        .ok_or(ContractError::ProposalNotFound)?;
+        let mut proposal = proposals
+            .get(proposal_id)
+            .ok_or(ContractError::ProposalNotFound)?;
+
+        if proposal.executed {
+            return Err(ContractError::ProposalAlreadyExecuted);
+        }
+
+        let now = env.ledger().timestamp();
+        if now >= proposal.deadline {
+            return Err(ContractError::ProposalVotingClosed);
+        }
+
+        let mut all_approvals: Map<u64, Vec<Address>> =
+            storage::persistent_get::<Map<u64, Vec<Address>>>(
+                &env,
+                &StorageKey::OperationProposalApprovals,
+            )
+            .unwrap_or(Map::new(&env));
+        let mut approvals = all_approvals.get(proposal_id).unwrap_or(Vec::new(&env));
+
+        for i in 0..approvals.len() {
+            if approvals.get(i).unwrap() == approver {
+                return Err(ContractError::AlreadyVoted);
+            }
+        }
+
+        approvals.push_back(approver.clone());
+        proposal.approvals_count = proposal.approvals_count.saturating_add(1);
+        all_approvals.set(proposal_id, approvals);
+        storage::persistent_set(
+            &env,
+            &StorageKey::OperationProposalApprovals,
+            &all_approvals,
+        );
+
+        let executed = if proposal.approvals_count >= proposal.threshold {
+            Self::execute_sensitive_operation(&env, &proposal.operation)?;
+            proposal.executed = true;
+            proposal.executed_at = now;
+            env.events().publish(
+                (symbol_short!("op_prop"), symbol_short!("executed")),
+                (proposal_id, now),
+            );
+            true
+        } else {
+            env.events().publish(
+                (symbol_short!("op_prop"), symbol_short!("approved")),
+                (proposal_id, proposal.approvals_count, proposal.threshold),
+            );
+            false
+        };
+
+        proposals.set(proposal_id, proposal);
+        storage::persistent_set(&env, &StorageKey::OperationProposals, &proposals);
+
+        Ok(executed)
+    }
+
+    /// Fetches an operation proposal by ID (#894).
+    pub fn get_operation_proposal(
+        env: Env,
+        proposal_id: u64,
+    ) -> Result<OperationProposal, ContractError> {
+        storage::extend_instance_ttl(&env);
+        storage::persistent_get::<Map<u64, OperationProposal>>(
+            &env,
+            &StorageKey::OperationProposals,
+        )
+        .ok_or(ContractError::ProposalNotFound)?
+        .get(proposal_id)
+        .ok_or(ContractError::ProposalNotFound)
+    }
+
+    /// Returns all approvers for a given operation proposal (#894).
+    pub fn get_operation_proposal_approvals(env: Env, proposal_id: u64) -> Vec<Address> {
+        storage::extend_instance_ttl(&env);
+        storage::persistent_get::<Map<u64, Vec<Address>>>(
+            &env,
+            &StorageKey::OperationProposalApprovals,
+        )
+        .and_then(|m| m.get(proposal_id))
+        .unwrap_or(Vec::new(&env))
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // #895 — Recipient earnings tracking per token
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// Returns the total cumulative earnings of a recipient for a specific token (#895).
+    pub fn get_recipient_earnings(env: Env, recipient: Address, token: Address) -> i128 {
+        storage::extend_instance_ttl(&env);
+        let key = StorageKey::RecipientEarnings(recipient, token);
+        if let Some(val) = storage::persistent_get::<i128>(&env, &key) {
+            storage::extend_persistent_ttl_for(&env, &key);
+            val
+        } else {
+            0
+        }
     }
 }
 
@@ -3680,7 +4205,10 @@ mod basis_point_overflow_tests {
     fn test_checked_bps_amount_i128_max_boundaries() {
         let env = Env::default();
 
-        assert_eq!(RoyaltySplitter::checked_bps_amount(&env, i128::MAX, 0).unwrap(), 0);
+        assert_eq!(
+            RoyaltySplitter::checked_bps_amount(&env, i128::MAX, 0).unwrap(),
+            0
+        );
         assert_eq!(
             RoyaltySplitter::checked_bps_amount(&env, i128::MAX, 5_000).unwrap(),
             i128::MAX / 2
@@ -3708,7 +4236,15 @@ mod reentrancy_tests {
     use soroban_sdk::token::Client as TokenClient;
     use soroban_sdk::token::StellarAssetClient;
 
-    fn setup(env: &Env) -> (Address, RoyaltySplitterClient<'_>, Address, Address, Address) {
+    fn setup(
+        env: &Env,
+    ) -> (
+        Address,
+        RoyaltySplitterClient<'_>,
+        Address,
+        Address,
+        Address,
+    ) {
         let contract_id = env.register_contract(None, RoyaltySplitter);
         let client = RoyaltySplitterClient::new(env, &contract_id);
         let a = Address::generate(env);
@@ -3741,7 +4277,10 @@ mod reentrancy_tests {
         assert_eq!(tc.balance(&b), 400);
         assert_eq!(tc.balance(&contract_id), 0);
 
-        assert_eq!(client.try_distribute(&token), Err(Ok(ContractError::Underfunded)));
+        assert_eq!(
+            client.try_distribute(&token),
+            Err(Ok(ContractError::Underfunded))
+        );
         assert_eq!(client.get_distribute_count(), 1);
 
         // History and pending tracking (#775) reflect the completed distribution.
@@ -3776,31 +4315,397 @@ mod reentrancy_tests {
             Err(Ok(ContractError::NoSecondaryRoyalties))
         );
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// #894 — Collaborative signing & threshold approval for sensitive operations
+// ─────────────────────────────────────────────────────────────────────────
+#[cfg(test)]
+mod collaborative_operation_proposal_tests {
+    use super::*;
+    use soroban_sdk::testutils::{Address as _, Ledger};
+
+    fn setup(
+        env: &Env,
+        n_admins: usize,
+        threshold: u32,
+    ) -> (Address, Vec<Address>, RoyaltySplitterClient<'_>) {
+        let contract_id = env.register_contract(None, RoyaltySplitter);
+        let client = RoyaltySplitterClient::new(env, &contract_id);
+        let collab_a = Address::generate(env);
+        let collab_b = Address::generate(env);
+        client.initialize(
+            &Vec::from_array(env, [collab_a, collab_b]),
+            &Vec::from_array(env, [6_000u32, 4_000u32]),
+        );
+
+        let mut admins = Vec::new(env);
+        for _ in 0..n_admins {
+            admins.push_back(Address::generate(env));
+        }
+
+        if n_admins > 0 {
+            client.set_admins(&admins, &threshold);
+        }
+
+        let default_admin = client.get_admin();
+        (default_admin, admins, client)
+    }
 
     #[test]
-    fn test_batch_distribute_updates_history_atomically() {
+    fn single_admin_executes_immediately_on_propose() {
         let env = Env::default();
-        env.mock_all_auths_allowing_non_root_auth();
-        let (contract_id, client, a, b, token1) = setup(&env);
-        let token_admin2 = Address::generate(&env);
-        let token2 = env.register_stellar_asset_contract(token_admin2);
+        env.mock_all_auths();
+        let (admin, _, client) = setup(&env, 0, 1);
 
-        StellarAssetClient::new(&env, &token1).mint(&contract_id, &1_000);
-        StellarAssetClient::new(&env, &token2).mint(&contract_id, &2_000);
+        assert!(!client.is_paused());
+        let prop_id =
+            client.propose_operation(&admin, &SensitiveOperation::Pause, &MIN_PROPOSAL_DURATION);
+        assert_eq!(prop_id, 1);
+        assert!(client.is_paused());
 
-        let tokens = Vec::from_array(&env, [token1.clone(), token2.clone()]);
+        let proposal = client.get_operation_proposal(&prop_id);
+        assert_eq!(proposal.threshold, 1);
+        assert_eq!(proposal.approvals_count, 1);
+        assert!(proposal.executed);
+        assert_eq!(proposal.executed_at, env.ledger().timestamp());
+    }
+
+    #[test]
+    fn multi_admin_threshold_approval_and_execution() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_, admins, client) = setup(&env, 3, 2);
+        let admin1 = admins.get(0).unwrap();
+        let admin2 = admins.get(1).unwrap();
+        let admin3 = admins.get(2).unwrap();
+
+        let initial_rate = client.get_royalty_rate();
+        assert_ne!(initial_rate, 800);
+
+        // Admin 1 proposes rate change to 800 bps
+        let prop_id = client.propose_operation(
+            &admin1,
+            &SensitiveOperation::SetRoyaltyRate(800),
+            &MIN_PROPOSAL_DURATION,
+        );
+
+        let prop = client.get_operation_proposal(&prop_id);
+        assert_eq!(prop.threshold, 2);
+        assert_eq!(prop.approvals_count, 1);
+        assert!(!prop.executed);
+        assert_eq!(client.get_royalty_rate(), initial_rate);
+
+        let approvers = client.get_operation_proposal_approvals(&prop_id);
+        assert_eq!(approvers.len(), 1);
+        assert_eq!(approvers.get(0).unwrap(), admin1);
+
+        // Admin 2 approves -> reaches threshold (2/2) -> executes!
+        let executed = client.approve_operation(&admin2, &prop_id);
+        assert!(executed);
+
+        let prop_after = client.get_operation_proposal(&prop_id);
+        assert_eq!(prop_after.approvals_count, 2);
+        assert!(prop_after.executed);
+        assert_eq!(client.get_royalty_rate(), 800);
+
+        let final_approvers = client.get_operation_proposal_approvals(&prop_id);
+        assert_eq!(final_approvers.len(), 2);
+        assert_eq!(final_approvers.get(1).unwrap(), admin2);
+
+        // Admin 3 attempting to approve executed proposal is rejected
+        assert_eq!(
+            client.try_approve_operation(&admin3, &prop_id),
+            Err(Ok(ContractError::ProposalAlreadyExecuted))
+        );
+    }
+
+    #[test]
+    fn unauthorized_signer_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_, admins, client) = setup(&env, 3, 2);
+        let admin1 = admins.get(0).unwrap();
+        let stranger = Address::generate(&env);
+
+        assert_eq!(
+            client.try_propose_operation(
+                &stranger,
+                &SensitiveOperation::Pause,
+                &MIN_PROPOSAL_DURATION
+            ),
+            Err(Ok(ContractError::UnauthorizedEmergencySigner))
+        );
+
+        let prop_id =
+            client.propose_operation(&admin1, &SensitiveOperation::Pause, &MIN_PROPOSAL_DURATION);
+
+        assert_eq!(
+            client.try_approve_operation(&stranger, &prop_id),
+            Err(Ok(ContractError::UnauthorizedEmergencySigner))
+        );
+    }
+
+    #[test]
+    fn duplicate_approval_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_, admins, client) = setup(&env, 3, 3);
+        let admin1 = admins.get(0).unwrap();
+
+        let prop_id =
+            client.propose_operation(&admin1, &SensitiveOperation::Pause, &MIN_PROPOSAL_DURATION);
+
+        // Admin 1 was auto-recorded on propose, trying to approve again is rejected
+        assert_eq!(
+            client.try_approve_operation(&admin1, &prop_id),
+            Err(Ok(ContractError::AlreadyVoted))
+        );
+    }
+
+    #[test]
+    fn proposal_expiration_enforced() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_, admins, client) = setup(&env, 3, 2);
+        let admin1 = admins.get(0).unwrap();
+        let admin2 = admins.get(1).unwrap();
+
+        env.ledger().with_mut(|l| l.timestamp = 10_000);
+        let prop_id = client.propose_operation(
+            &admin1,
+            &SensitiveOperation::Pause,
+            &MIN_PROPOSAL_DURATION, // 3600s
+        );
+
+        // Advance ledger timestamp beyond deadline
+        env.ledger()
+            .with_mut(|l| l.timestamp = 10_000 + MIN_PROPOSAL_DURATION + 10);
+
+        assert_eq!(
+            client.try_approve_operation(&admin2, &prop_id),
+            Err(Ok(ContractError::ProposalVotingClosed))
+        );
+        assert!(!client.is_paused());
+    }
+
+    #[test]
+    fn proposal_duration_bounds_and_params_validated() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (admin, _, client) = setup(&env, 0, 1);
+
+        assert_eq!(
+            client.try_propose_operation(
+                &admin,
+                &SensitiveOperation::Pause,
+                &(MIN_PROPOSAL_DURATION - 1)
+            ),
+            Err(Ok(ContractError::InvalidProposalDuration))
+        );
+        assert_eq!(
+            client.try_propose_operation(
+                &admin,
+                &SensitiveOperation::Pause,
+                &(MAX_PROPOSAL_DURATION + 1)
+            ),
+            Err(Ok(ContractError::InvalidProposalDuration))
+        );
+
+        // Invalid royalty rate
+        assert_eq!(
+            client.try_propose_operation(
+                &admin,
+                &SensitiveOperation::SetRoyaltyRate(10_001),
+                &MIN_PROPOSAL_DURATION
+            ),
+            Err(Ok(ContractError::RoyaltyRateTooHigh))
+        );
+
+        // Invalid anomaly threshold
+        assert_eq!(
+            client.try_propose_operation(
+                &admin,
+                &SensitiveOperation::SetAnomalyThreshold(-1),
+                &MIN_PROPOSAL_DURATION
+            ),
+            Err(Ok(ContractError::InvalidAnomalyThreshold))
+        );
+    }
+
+    #[test]
+    fn various_sensitive_operations_execute_correctly() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (admin, _, client) = setup(&env, 0, 1);
+
+        // Pause
+        client.propose_operation(&admin, &SensitiveOperation::Pause, &MIN_PROPOSAL_DURATION);
+        assert!(client.is_paused());
+
+        // Unpause
+        client.propose_operation(&admin, &SensitiveOperation::Unpause, &MIN_PROPOSAL_DURATION);
+        assert!(!client.is_paused());
+
+        // Set incentives
+        client.propose_operation(
+            &admin,
+            &SensitiveOperation::SetIncentivesEnabled(true),
+            &MIN_PROPOSAL_DURATION,
+        );
+        assert!(client.is_incentives_enabled());
+
+        // Set anomaly threshold
+        client.propose_operation(
+            &admin,
+            &SensitiveOperation::SetAnomalyThreshold(50_000_000),
+            &MIN_PROPOSAL_DURATION,
+        );
+        assert_eq!(client.get_anomaly_threshold(), Some(50_000_000));
+
+        // Transfer admin
+        let new_admin = Address::generate(&env);
+        client.propose_operation(
+            &admin,
+            &SensitiveOperation::TransferAdmin(new_admin.clone()),
+            &MIN_PROPOSAL_DURATION,
+        );
+        assert_eq!(client.get_admin(), new_admin);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// #895 — Recipient earnings tracking per token tests
+// ─────────────────────────────────────────────────────────────────────────
+#[cfg(test)]
+mod recipient_earnings_tests {
+    use super::*;
+    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::token::{Client as TokenClient, StellarAssetClient};
+
+    fn setup(env: &Env) -> (Address, Address, Address, RoyaltySplitterClient<'_>) {
+        let contract_id = env.register_contract(None, RoyaltySplitter);
+        let client = RoyaltySplitterClient::new(env, &contract_id);
+        let collab_a = Address::generate(env);
+        let collab_b = Address::generate(env);
+        client.initialize(
+            &Vec::from_array(env, [collab_a.clone(), collab_b.clone()]),
+            &Vec::from_array(env, [6_000u32, 4_000u32]),
+        );
+        (contract_id, collab_a, collab_b, client)
+    }
+
+    fn create_token(env: &Env) -> (Address, StellarAssetClient<'_>, TokenClient<'_>) {
+        let admin = Address::generate(env);
+        let token = env.register_stellar_asset_contract(admin);
+        let asset_client = StellarAssetClient::new(env, &token);
+        let token_client = TokenClient::new(env, &token);
+        (token, asset_client, token_client)
+    }
+
+    #[test]
+    fn single_distribution_accumulates_earnings() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, collab_a, collab_b, client) = setup(&env);
+        let (token, asset_client, _) = create_token(&env);
+
+        asset_client.mint(&contract_id, &10_000);
+
+        // Before distribution, earnings are 0
+        assert_eq!(client.get_recipient_earnings(&collab_a, &token), 0);
+        assert_eq!(client.get_recipient_earnings(&collab_b, &token), 0);
+
+        client.distribute(&token);
+
+        // 60% of 10,000 = 6,000; 40% of 10,000 = 4,000
+        assert_eq!(client.get_recipient_earnings(&collab_a, &token), 6_000);
+        assert_eq!(client.get_recipient_earnings(&collab_b, &token), 4_000);
+
+        // Stranger has 0 earnings
+        let stranger = Address::generate(&env);
+        assert_eq!(client.get_recipient_earnings(&stranger, &token), 0);
+    }
+
+    #[test]
+    fn consecutive_distributions_accumulate_correctly() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, collab_a, collab_b, client) = setup(&env);
+        let (token, asset_client, _) = create_token(&env);
+
+        // First distribution: 10,000
+        asset_client.mint(&contract_id, &10_000);
+        client.distribute(&token);
+        assert_eq!(client.get_recipient_earnings(&collab_a, &token), 6_000);
+        assert_eq!(client.get_recipient_earnings(&collab_b, &token), 4_000);
+
+        // Second distribution: 20,000
+        asset_client.mint(&contract_id, &20_000);
+        client.distribute(&token);
+        assert_eq!(client.get_recipient_earnings(&collab_a, &token), 18_000);
+        assert_eq!(client.get_recipient_earnings(&collab_b, &token), 12_000);
+    }
+
+    #[test]
+    fn multi_token_earnings_tracking() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, collab_a, collab_b, client) = setup(&env);
+        let (token_a, asset_client_a, _) = create_token(&env);
+        let (token_b, asset_client_b, _) = create_token(&env);
+
+        asset_client_a.mint(&contract_id, &10_000);
+        client.distribute(&token_a);
+
+        asset_client_b.mint(&contract_id, &50_000);
+        client.distribute(&token_b);
+
+        // Token A earnings
+        assert_eq!(client.get_recipient_earnings(&collab_a, &token_a), 6_000);
+        assert_eq!(client.get_recipient_earnings(&collab_b, &token_a), 4_000);
+
+        // Token B earnings
+        assert_eq!(client.get_recipient_earnings(&collab_a, &token_b), 30_000);
+        assert_eq!(client.get_recipient_earnings(&collab_b, &token_b), 20_000);
+    }
+
+    #[test]
+    fn batch_distribution_accumulates_earnings() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, collab_a, collab_b, client) = setup(&env);
+        let (token_a, asset_client_a, _) = create_token(&env);
+        let (token_b, asset_client_b, _) = create_token(&env);
+
+        asset_client_a.mint(&contract_id, &10_000);
+        asset_client_b.mint(&contract_id, &20_000);
+
+        let tokens = Vec::from_array(&env, [token_a.clone(), token_b.clone()]);
         client.batch_distribute(&tokens);
 
-        assert_eq!(client.get_distribute_count(), 2);
+        assert_eq!(client.get_recipient_earnings(&collab_a, &token_a), 6_000);
+        assert_eq!(client.get_recipient_earnings(&collab_b, &token_a), 4_000);
+        assert_eq!(client.get_recipient_earnings(&collab_a, &token_b), 12_000);
+        assert_eq!(client.get_recipient_earnings(&collab_b, &token_b), 8_000);
+    }
 
-        let tc1 = TokenClient::new(&env, &token1);
-        let tc2 = TokenClient::new(&env, &token2);
-        assert_eq!(tc1.balance(&a), 600);
-        assert_eq!(tc1.balance(&b), 400);
-        assert_eq!(tc2.balance(&a), 1_200);
-        assert_eq!(tc2.balance(&b), 800);
+    #[test]
+    fn secondary_distribution_accumulates_earnings() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, collab_a, collab_b, client) = setup(&env);
+        let (token, asset_client, token_client) = create_token(&env);
 
-        assert_eq!(client.get_distribution_history(&10, &0).len(), 2);
+        let payer = Address::generate(&env);
+        asset_client.mint(&payer, &10_000);
+        token_client.approve(&payer, &contract_id, &10_000, &200_000);
+
+        client.record_secondary_royalty(&token, &payer, &10_000);
+        client.distribute_secondary();
+
+        assert_eq!(client.get_recipient_earnings(&collab_a, &token), 6_000);
+        assert_eq!(client.get_recipient_earnings(&collab_b, &token), 4_000);
     }
 }
 
@@ -3828,7 +4733,10 @@ mod secondary_pool_cap_tests {
         let env = Env::default();
         env.mock_all_auths();
         let (_, client) = setup(&env);
-        assert_eq!(client.get_max_secondary_pool_size(), MAX_SECONDARY_POOL_SIZE);
+        assert_eq!(
+            client.get_max_secondary_pool_size(),
+            MAX_SECONDARY_POOL_SIZE
+        );
     }
 
     #[test]
@@ -3846,7 +4754,7 @@ mod secondary_pool_cap_tests {
         client.record_secondary_royalty(&token, &payer, &900);
         assert_eq!(
             client.try_record_secondary_royalty(&token, &payer, &200),
-            Err(Ok(ContractError::SecondaryPoolLimitExceeded))
+            Err(Ok(ContractError::PoolExceedsBalance))
         );
         // The rejected call must not have moved funds or grown the pool.
         assert_eq!(client.get_secondary_pool(), 900);
@@ -3866,7 +4774,7 @@ mod secondary_pool_cap_tests {
 
         assert_eq!(
             client.try_set_max_secondary_pool_size(&2_000),
-            Err(Ok(ContractError::SecondaryPoolLimitExceeded))
+            Err(Ok(ContractError::PoolExceedsBalance))
         );
         client.set_max_secondary_pool_size(&3_000); // exactly the current balance is fine
         assert_eq!(client.get_max_secondary_pool_size(), 3_000);
@@ -3888,16 +4796,29 @@ mod oracle_tests {
         }
 
         pub fn lastprice(env: Env, _asset: OracleAsset) -> Option<OraclePriceData> {
-            let price: i128 = env.storage().instance().get(&symbol_short!("price")).unwrap_or(0);
-            let ts: u64 = env.storage().instance().get(&symbol_short!("ts")).unwrap_or(0);
+            let price: i128 = env
+                .storage()
+                .instance()
+                .get(&symbol_short!("price"))
+                .unwrap_or(0);
+            let ts: u64 = env
+                .storage()
+                .instance()
+                .get(&symbol_short!("ts"))
+                .unwrap_or(0);
             if price == 0 {
                 return None;
             }
-            Some(OraclePriceData { price, timestamp: ts })
+            Some(OraclePriceData {
+                price,
+                timestamp: ts,
+            })
         }
 
         pub fn set_quote(env: Env, price: i128, ts: u64) {
-            env.storage().instance().set(&symbol_short!("price"), &price);
+            env.storage()
+                .instance()
+                .set(&symbol_short!("price"), &price);
             env.storage().instance().set(&symbol_short!("ts"), &ts);
         }
     }
@@ -3921,7 +4842,7 @@ mod oracle_tests {
 
         assert_eq!(
             client.try_update_royalty_rate_from_oracle(),
-            Err(Ok(ContractError::OracleNotConfigured))
+            Err(Ok(ContractError::NotInitialized))
         );
         assert_eq!(client.get_royalty_rate(), 0);
     }
@@ -3950,7 +4871,7 @@ mod oracle_tests {
         // Calling again immediately is rate-limited by update_frequency.
         assert_eq!(
             client.try_update_royalty_rate_from_oracle(),
-            Err(Ok(ContractError::OracleUnavailable))
+            Err(Ok(ContractError::NoBalance))
         );
 
         env.ledger().with_mut(|l| l.timestamp = 10_000 + 3_600);
@@ -3979,7 +4900,7 @@ mod oracle_tests {
         oracle_client.set_quote(&7_500_000i128, &9_000u64);
         assert_eq!(
             client.try_update_royalty_rate_from_oracle(),
-            Err(Ok(ContractError::OracleUnavailable))
+            Err(Ok(ContractError::NoBalance))
         );
         assert_eq!(client.get_royalty_rate(), 500);
     }

@@ -93,7 +93,7 @@ export class ErrorBoundary extends Component<
                 <button
                   onClick={this.handleRetry}
                   className="error-boundary-button error-boundary-button-primary"
-                  aria-label="Retry loading this feature"
+                  aria-label="Try Again"
                 >
                   Try Again
                 </button>
@@ -102,7 +102,7 @@ export class ErrorBoundary extends Component<
                   <button
                     onClick={this.handleRetry}
                     className="error-boundary-button error-boundary-button-primary"
-                    aria-label="Retry loading the page"
+                    aria-label="Try Again"
                   >
                     Try Again
                   </button>

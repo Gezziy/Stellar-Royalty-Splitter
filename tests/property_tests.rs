@@ -98,7 +98,10 @@ fn shares_summing_to_10000(n: usize) -> impl Strategy<Value = Vec<u32>> {
 // ── Proptest configuration ────────────────────────────────────────────────
 
 fn config_100() -> ProptestConfig {
-    ProptestConfig { cases: 100, ..ProptestConfig::default() }
+    ProptestConfig {
+        cases: 100,
+        ..ProptestConfig::default()
+    }
 }
 
 fn config_1000() -> ProptestConfig {
@@ -805,7 +808,17 @@ fn test_edge_cases_0_max_and_1_to_100_collaborators() {
     assert!(dust >= 0 && dust <= (n as i128 - 1));
 
     // 5. Test edge cases across every collaborator count from 1 to 100 with varying boundary amounts
-    let amounts_to_test = [0i128, 1, 2, 9_999, 10_000, 10_001, 1_000_000, i128::MAX / 2, i128::MAX];
+    let amounts_to_test = [
+        0i128,
+        1,
+        2,
+        9_999,
+        10_000,
+        10_001,
+        1_000_000,
+        i128::MAX / 2,
+        i128::MAX,
+    ];
     for &amt in &amounts_to_test {
         for n in 1..=100 {
             let base = 10_000u32 / n as u32;
@@ -946,4 +959,3 @@ proptest! {
         }
     }
 }
-

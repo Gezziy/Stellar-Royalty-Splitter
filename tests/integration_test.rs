@@ -6324,6 +6324,222 @@ fn test_pause_operation_requires_admin_auth() {
     client.pause_operation(&OperationType::PrimaryDistribution);
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// #894 — Collaborative signing & threshold approval integration tests
+// ─────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_collaborative_operation_proposal_multisig_workflow() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, client) = setup(&env);
+    let admin1 = Address::generate(&env);
+    let admin2 = Address::generate(&env);
+    let admin3 = Address::generate(&env);
+    let b = Address::generate(&env);
+
+    client.initialize(
+        &vec![&env, admin1.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
+
+    // Configure 2-of-3 multi-admin
+    let admins = vec![&env, admin1.clone(), admin2.clone(), admin3.clone()];
+    client.set_admins(&admins, &2_u32);
+
+    // Initial state
+    assert!(!client.is_paused());
+
+    // Admin 1 proposes Pause operation
+    let prop_id = client.propose_operation(&admin1, &SensitiveOperation::Pause, &3600_u64);
+    assert_eq!(prop_id, 1);
+
+    // 1 of 2 threshold -> not yet paused
+    let prop = client.get_operation_proposal(&prop_id);
+    assert_eq!(prop.threshold, 2);
+    assert_eq!(prop.approvals_count, 1);
+    assert!(!prop.executed);
+    assert!(!client.is_paused());
+
+    // Admin 2 approves -> threshold reached (2 of 2) -> executes Pause
+    let executed = client.approve_operation(&admin2, &prop_id);
+    assert!(executed);
+    assert!(client.is_paused());
+
+    let prop_after = client.get_operation_proposal(&prop_id);
+    assert_eq!(prop_after.approvals_count, 2);
+    assert!(prop_after.executed);
+
+    // Unpause proposal workflow
+    let unpause_id = client.propose_operation(&admin3, &SensitiveOperation::Unpause, &3600_u64);
+    assert_eq!(unpause_id, 2);
+    assert!(client.is_paused());
+
+    let unpause_executed = client.approve_operation(&admin1, &unpause_id);
+    assert!(unpause_executed);
+    assert!(!client.is_paused());
+}
+
+#[test]
+fn test_collaborative_operation_proposal_duplicate_and_unauthorized_rejections() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, client) = setup(&env);
+    let admin1 = Address::generate(&env);
+    let admin2 = Address::generate(&env);
+    let b = Address::generate(&env);
+    let unauthorized = Address::generate(&env);
+
+    client.initialize(
+        &vec![&env, admin1.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
+
+    let admins = vec![&env, admin1.clone(), admin2.clone()];
+    client.set_admins(&admins, &2_u32);
+
+    // Non-admin cannot propose
+    assert_eq!(
+        client.try_propose_operation(&unauthorized, &SensitiveOperation::Pause, &3600_u64),
+        Err(Ok(ContractError::UnauthorizedEmergencySigner.into()))
+    );
+
+    let prop_id = client.propose_operation(&admin1, &SensitiveOperation::Pause, &3600_u64);
+
+    // Non-admin cannot approve
+    assert_eq!(
+        client.try_approve_operation(&unauthorized, &prop_id),
+        Err(Ok(ContractError::UnauthorizedEmergencySigner.into()))
+    );
+
+    // Proposer cannot double-approve
+    assert_eq!(
+        client.try_approve_operation(&admin1, &prop_id),
+        Err(Ok(ContractError::AlreadyVoted.into()))
+    );
+
+    // Admin 2 approves -> executes
+    client.approve_operation(&admin2, &prop_id);
+
+    // Replay / already executed proposal cannot be approved again
+    assert_eq!(
+        client.try_approve_operation(&admin2, &prop_id),
+        Err(Ok(ContractError::ProposalAlreadyExecuted.into()))
+    );
+}
+
+#[test]
+fn test_collaborative_operation_proposal_expiration() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, client) = setup(&env);
+    let admin1 = Address::generate(&env);
+    let admin2 = Address::generate(&env);
+    let b = Address::generate(&env);
+
+    client.initialize(
+        &vec![&env, admin1.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
+
+    let admins = vec![&env, admin1.clone(), admin2.clone()];
+    client.set_admins(&admins, &2_u32);
+
+    env.ledger().with_mut(|l| l.timestamp = 5_000);
+    let prop_id = client.propose_operation(
+        &admin1,
+        &SensitiveOperation::SetRoyaltyRate(750_u32),
+        &3600_u64,
+    );
+
+    // Advance time past expiration
+    env.ledger().with_mut(|l| l.timestamp = 5_000 + 3600 + 1);
+
+    // Approval after expiration fails
+    assert_eq!(
+        client.try_approve_operation(&admin2, &prop_id),
+        Err(Ok(ContractError::ProposalVotingClosed.into()))
+    );
+    assert_ne!(client.get_royalty_rate(), 750);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// #895 — Recipient earnings tracking per token integration tests
+// ─────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_recipient_earnings_tracking_on_distributions() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, client) = setup(&env);
+    let token_admin = Address::generate(&env);
+    let token_a = make_token(&env, &token_admin);
+    let token_b = make_token(&env, &token_admin);
+
+    let collab_a = Address::generate(&env);
+    let collab_b = Address::generate(&env);
+
+    client.initialize(
+        &vec![&env, collab_a.clone(), collab_b.clone()],
+        &vec![&env, 7000_u32, 3000_u32],
+    );
+
+    // Initial query returns 0
+    assert_eq!(client.get_recipient_earnings(&collab_a, &token_a), 0);
+    assert_eq!(client.get_recipient_earnings(&collab_b, &token_a), 0);
+    assert_eq!(client.get_recipient_earnings(&collab_a, &token_b), 0);
+    assert_eq!(client.get_recipient_earnings(&collab_b, &token_b), 0);
+
+    // First distribution of Token A: 10,000
+    mint(&env, &token_a, &contract_id, 10_000);
+    client.distribute(&token_a);
+
+    assert_eq!(client.get_recipient_earnings(&collab_a, &token_a), 7_000);
+    assert_eq!(client.get_recipient_earnings(&collab_b, &token_a), 3_000);
+
+    // Second distribution of Token A: 20,000
+    mint(&env, &token_a, &contract_id, 20_000);
+    client.distribute(&token_a);
+
+    assert_eq!(client.get_recipient_earnings(&collab_a, &token_a), 21_000);
+    assert_eq!(client.get_recipient_earnings(&collab_b, &token_a), 9_000);
+
+    // Distribution of Token B: 50,000 (distinct token tracking)
+    mint(&env, &token_b, &contract_id, 50_000);
+    client.distribute(&token_b);
+
+    assert_eq!(client.get_recipient_earnings(&collab_a, &token_b), 35_000);
+    assert_eq!(client.get_recipient_earnings(&collab_b, &token_b), 15_000);
+
+    // Token A totals unchanged
+    assert_eq!(client.get_recipient_earnings(&collab_a, &token_a), 21_000);
+    assert_eq!(client.get_recipient_earnings(&collab_b, &token_a), 9_000);
+}
+
+#[test]
+fn test_recipient_earnings_in_resilient_distribution() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, client) = setup(&env);
+    let token_admin = Address::generate(&env);
+    let token = make_token(&env, &token_admin);
+
+    let collab_a = Address::generate(&env);
+    let collab_b = Address::generate(&env);
+
+    client.initialize(
+        &vec![&env, collab_a.clone(), collab_b.clone()],
+        &vec![&env, 6000_u32, 4000_u32],
+    );
+
+    mint(&env, &token, &contract_id, 10_000);
+    let failed = client.distribute_resilient(&token, &vec![&env]);
+    assert!(failed.is_empty());
+
+    assert_eq!(client.get_recipient_earnings(&collab_a, &token), 6_000);
+    assert_eq!(client.get_recipient_earnings(&collab_b, &token), 4_000);
+}
+
 // =============================================================================
 // Issue #838 — Emergency pause mechanism with multi-sig requirement (M-of-N)
 // =============================================================================
@@ -6462,4 +6678,3 @@ fn test_emergency_pause_multisig_threshold_and_signer_validations() {
     // Contract remains unpaused
     assert!(!client.is_emergency_paused());
 }
-

@@ -638,7 +638,7 @@ export default function App() {
             className={`app-sidebar-cards ${sidebarOpen ? "open" : ""}`}
           >
             <div className="sidebar-card">
-              <h3>🔗 Wallet Connection</h3>
+              <h2>🔗 Wallet Connection</h2>
               <WalletConnect
                 walletAddress={walletAddress}
                 onConnect={handleWalletConnect}
@@ -647,7 +647,7 @@ export default function App() {
             </div>
 
             <div className="sidebar-card">
-              <h3>📋 Contract ID</h3>
+              <h2>📋 Contract ID</h2>
               <div className="contract-input-row">
                 <input
                   ref={contractInputRef}
@@ -688,7 +688,7 @@ export default function App() {
 
             {contractIdValid && (
               <div className="sidebar-card">
-                <h3>📊 Quick Actions</h3>
+                <h2>📊 Quick Actions</h2>
                 <div className="quick-actions">
                   <button
                     className={`quick-action-btn ${
@@ -740,7 +740,7 @@ export default function App() {
           </div>
         </div>
 
-        <div className="app-main">{renderPage()}</div>
+        <main className="app-main">{renderPage()}</main>
       </div>
 
       <OnboardingWalkthrough />

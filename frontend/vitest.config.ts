@@ -8,15 +8,26 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export default defineConfig({
   plugins: [react()],
   resolve: {
-    alias: {
+    alias: [
+      {
+        find: /^@testing-library\/react$/,
+        replacement: path.resolve(__dirname, "src/test/test-utils.tsx"),
+      },
+      {
+        find: /^@jest\/globals$/,
+        replacement: path.resolve(__dirname, "src/test/jest-globals.ts"),
+      },
+      {
       // Keep in sync with vite.config.ts: shared/stellar-address.js (repo
       // root) imports @stellar/stellar-sdk, which Node cannot resolve from
       // outside the frontend package root.
-      "@stellar/stellar-sdk": path.resolve(
-        __dirname,
-        "node_modules/@stellar/stellar-sdk",
-      ),
-    },
+        find: "@stellar/stellar-sdk",
+        replacement: path.resolve(
+          __dirname,
+          "node_modules/@stellar/stellar-sdk",
+        ),
+      },
+    ],
   },
   test: {
     environment: "jsdom",

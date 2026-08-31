@@ -45,7 +45,7 @@ describe("CollaboratorList #833", () => {
   test("address truncation to 10+6 chars works for Stellar addresses", () => {
     const addr = collaborators[0].address;
     const display = `${addr.slice(0, 10)}...${addr.slice(-6)}`;
-    expect(display).toMatch(/^GBBD47IF6L\.\.\.LA5$/);
+    expect(display).toMatch(/^GBBD47IF6L\.\.\.LLFLA5$/);
   });
 
   test("formatNumber formats payoutCount", () => {
