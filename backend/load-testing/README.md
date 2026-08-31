@@ -19,6 +19,19 @@ using [k6](https://k6.io/) as the load testing tool.
 
 ## Quick Start
 
+The repository includes a portable runner. It validates the API before heavier tests and writes a JSON summary under `load-testing/reports/`:
+
+```bash
+cd backend
+BASE_URL=http://localhost:3001 ./load-testing/run.sh smoke
+./load-testing/run.sh normal
+./load-testing/run.sh spike
+./load-testing/run.sh sustained
+```
+
+The runner fails fast when k6 is unavailable, and all scenarios expose explicit failure-rate and latency thresholds so CI can fail on a measurable regression.
+
+
 1. Start the API server (or point to a deployed instance):
    ```bash
    cd backend && npm run dev

@@ -332,6 +332,26 @@ export function initializeDatabase() {
           CREATE INDEX IF NOT EXISTS idx_webhook_dlq_created_at ON webhook_dlq(created_at);
         `,
       },
+      {
+        // #874: centralized structured log aggregation and retention
+        version: 14,
+        sql: `
+          CREATE TABLE IF NOT EXISTS application_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            level TEXT NOT NULL,
+            message TEXT NOT NULL,
+            correlation_id TEXT,
+            request_id TEXT,
+            service TEXT NOT NULL DEFAULT 'api',
+            metadata TEXT NOT NULL DEFAULT '{}'
+          );
+          CREATE INDEX IF NOT EXISTS idx_application_logs_timestamp ON application_logs(timestamp);
+          CREATE INDEX IF NOT EXISTS idx_application_logs_level_timestamp ON application_logs(level, timestamp);
+          CREATE INDEX IF NOT EXISTS idx_application_logs_correlation_id ON application_logs(correlation_id);
+          CREATE INDEX IF NOT EXISTS idx_application_logs_request_id ON application_logs(request_id);
+        `,
+      },
   ];
 
   for (const migration of migrations) {

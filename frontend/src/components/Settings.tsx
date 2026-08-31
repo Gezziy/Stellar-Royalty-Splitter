@@ -6,6 +6,9 @@ import {
   SettingsType,
   isValidContractId,
 } from "../context/SettingsContext";
+import { useUIStore } from "../store/uiStore";
+import { useSettingsStore } from "../store/settingsStore";
+import { useContractsStore } from "../store/contractsStore";
 
 import { CopyButton } from "./CopyButton";
 import { PaymentPreferences } from "./PaymentPreferences";
@@ -24,10 +27,14 @@ export const Settings: React.FC<SettingsProps> = ({
   walletAddress,
   onClearContract,
 }) => {
-  const { isDark, toggleTheme } = useTheme();
-  const { settings, updateSettings, addTrackedContract, removeTrackedContract } =
-    useSettings();
-  const [localSettings, setLocalSettings] = useState(() => ({ ...settings }));
+  const isDark = useUIStore((s) => s.isDark);
+  const toggleTheme = useUIStore((s) => s.toggleTheme);
+  const settings = useSettingsStore((s) => s.settings);
+  const updateSettings = useSettingsStore((s) => s.updateSettings);
+  const trackedContracts = useContractsStore((s) => s.trackedContracts);
+  const addTrackedContract = useContractsStore((s) => s.addTrackedContract);
+  const removeTrackedContract = useContractsStore((s) => s.removeTrackedContract);
+  const [localSettings, setLocalSettings] = useState(() => ({ ...settings, trackedContracts }));
 
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
   const [newContractId, setNewContractId] = useState("");
@@ -203,13 +210,13 @@ export const Settings: React.FC<SettingsProps> = ({
             </p>
           )}
 
-          {settings.trackedContracts.length === 0 ? (
+          {trackedContracts.length === 0 ? (
             <p className="setting-description">
               {t("settings.noContractsTracked")}
             </p>
           ) : (
             <ul className="tracked-contracts-list" aria-label="Tracked contracts">
-              {settings.trackedContracts.map((id) => (
+              {trackedContracts.map((id) => (
                 <li key={id} className="tracked-contract-item">
                   <span title={id}>{id}</span>
                   {id === contractId && (

@@ -171,6 +171,52 @@ class SqlitePool {
     });
   }
 
+  /**
+   * Clear the one-way draining flag.
+   *
+   * Used by tests to keep the draining state from leaking between test
+   * cases, and by `reinitialize()` after the automatic-reconnection path
+   * has rebuilt the pool (without it, the post-drain health probe would
+   * permanently report "Pool is draining" and reconnection could never
+   * succeed).
+   */
+  resetDraining() {
+    this.#draining = false;
+  }
+
+  /**
+   * Rebuild the pool with fresh connections.
+   *
+   * Used by the automatic-reconnection path (health-monitor's
+   * `attemptReconnection`) after a drain: the drained connections are
+   * closed, the draining flag is cleared, and POOL_SIZE brand-new
+   * connections are created so the pool accepts acquires again.
+   */
+  reinitialize() {
+    for (const conn of this.#connections) {
+      try {
+        conn.close();
+      } catch (_) { /* best-effort */ }
+    }
+    this.#connections = [];
+    this.#available = [];
+    // Defensive: any waiter still queued (drain normally guarantees none)
+    // is rejected rather than left hanging forever.
+    for (const waiter of this.#waiters) {
+      try {
+        waiter.reject(new Error("Connection pool was reinitialised"));
+      } catch (_) { /* best-effort */ }
+    }
+    this.#waiters = [];
+    for (let i = 0; i < POOL_SIZE; i++) {
+      const conn = new Database(DB_PATH);
+      applyPragmas(conn);
+      this.#connections.push(conn);
+      this.#available.push(conn);
+    }
+    this.#draining = false;
+  }
+
   getMetrics() {
     return {
       ...this.metrics,
