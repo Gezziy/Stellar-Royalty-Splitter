@@ -61,6 +61,11 @@ where
         .extend_ttl(key, PERSISTENT_MIN_TTL, PERSISTENT_MAX_TTL);
 }
 
+/// Remove a value from persistent storage.
+pub fn persistent_remove(env: &Env, key: &StorageKey) {
+    env.storage().persistent().remove(key);
+}
+
 /// Read a value from persistent storage and bump its TTL if present.
 pub fn persistent_get<T>(env: &Env, key: &StorageKey) -> Option<T>
 where

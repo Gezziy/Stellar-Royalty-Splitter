@@ -1,4 +1,4 @@
-// Property-based fuzz tests for the Stellar Royalty Splitter contract (#780).
+// Property-based fuzz tests for the Stellar Royalty Splitter contract (#780, #836).
 //
 // Uses `proptest` to generate randomised inputs and verify algebraic
 // invariants that must hold across ALL valid inputs — not just the fixed
@@ -7,20 +7,19 @@
 // Design principles:
 //   • Every `proptest!` block documents the *invariant* it checks, not just
 //     what the test does.
-//   • Strategies are kept conservative: amounts up to 1 trillion stroops
-//     (well within i128::MAX / 10_001) so no overflow is expected unless the
-//     arithmetic logic is wrong.
+//   • Arithmetic is hardened with quotient-remainder decomposition, ensuring
+//     no overflow for ALL non-negative i128 ranges up to i128::MAX.
 //   • Shrinking is enabled by default — proptest will reduce a failing case
 //     to its minimal reproduction automatically.
 //   • The `cases` configuration is set to 1 000 per property; a dedicated
 //     benchmark section uses 10 000 to validate throughput (see note below).
 //
-// Assumptions documented (per acceptance criteria):
-//   • No overflow for amounts < i128::MAX / 10_001  ≈ 1.7 × 10^34 stroops.
-//     We only generate up to 1 × 10^12 stroops, so overflow is impossible.
-//   • Dust is bounded: last recipient adjustment ≤ (n - 1) stroops.
-//   • Distribution is lossless: Σ payouts == total distributed.
-//   • Each collaborator receives ≥ 1 stroop when amount ≥ n.
+// Assumptions documented (per acceptance criteria #836):
+//   • No overflow for all valid amounts in 0..=i128::MAX and basis points in 0..=10_000.
+//   • Dust is bounded: last recipient adjustment <= (n - 1) stroops.
+//   • Distribution is strictly lossless: Σ payouts == total distributed.
+//   • Each collaborator receives >= 1 stroop when amount >= n.
+//   • 1 to 100 collaborator distributions conserve funds and bound dust without overflow.
 
 #![cfg(all(test, feature = "testutils"))]
 
@@ -30,7 +29,7 @@ use stellar_royalty_splitter::{ContractError, RoyaltySplitterClient};
 
 // ── Test helpers (mirrors integration_test.rs) ────────────────────────────
 
-fn setup(env: &Env) -> (Address, RoyaltySplitterClient) {
+fn setup(env: &Env) -> (Address, RoyaltySplitterClient<'_>) {
     let contract_id = env.register_contract(None, stellar_royalty_splitter::RoyaltySplitter);
     let client = RoyaltySplitterClient::new(env, &contract_id);
     (contract_id, client)
@@ -97,6 +96,10 @@ fn shares_summing_to_10000(n: usize) -> impl Strategy<Value = Vec<u32>> {
 }
 
 // ── Proptest configuration ────────────────────────────────────────────────
+
+fn config_100() -> ProptestConfig {
+    ProptestConfig { cases: 100, ..ProptestConfig::default() }
+}
 
 fn config_1000() -> ProptestConfig {
     ProptestConfig {
@@ -208,10 +211,10 @@ proptest! {
     }
 
     /// Invariant: royalty arithmetic matches manual calculation
-    /// (sale_price × rate) / 10 000.
+    /// (sale_price × rate) / 10 000 across the entire valid i128 range.
     #[test]
     fn prop_royalty_arithmetic_exact(
-        sale_price in 1i128..=1_000_000_000_000i128,
+        sale_price in 1i128..=i128::MAX,
         rate in 1u32..=10_000u32,
     ) {
         let env = Env::default();
@@ -227,7 +230,9 @@ proptest! {
         client.set_royalty_rate(&rate);
 
         let got = client.record_secondary_sale(&sale_price);
-        let expected = ((sale_price as u128) * (rate as u128) / 10_000) as i128;
+        let u_price = sale_price as u128;
+        let u_rate = rate as u128;
+        let expected = ((u_price / 10_000) * u_rate + ((u_price % 10_000) * u_rate) / 10_000) as i128;
         prop_assert_eq!(got, expected,
             "royalty mismatch: got={} expected={} (price={}, rate={})",
             got, expected, sale_price, rate
@@ -261,7 +266,7 @@ proptest! {
         let token = make_token(&env, &token_admin);
 
         // Generate n addresses and valid shares via a deterministic strategy runner
-        let mut addrs: Vec<Address> = (0..n).map(|_| Address::generate(&env)).collect();
+        let addrs: Vec<Address> = (0..n).map(|_| Address::generate(&env)).collect();
         let shares = {
             // Simple even-split with remainder on last
             let base = 10_000u32 / n as u32;
@@ -528,8 +533,7 @@ proptest! {
         // Build valid non-trivial shares via a fixed seeded split
         let shares: Vec<u32> = {
             let base = 10_000u32 / n as u32;
-            let rem  = 10_000u32 - base * n as u32;
-            let mut s: Vec<u32> = (0..n).map(|i| {
+            let s: Vec<u32> = (0..n).map(|i| {
                 // Give different amounts based on index to exercise non-uniform splits
                 let weight = (i as u32 + 1) * base / n as u32 + 1;
                 weight
@@ -595,23 +599,21 @@ proptest! {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// §3  Overflow safety — amounts near the valid upper bound
-//     Documents the assumption: no overflow for amounts < i128::MAX / 10_001.
+// §3  Overflow safety — all valid i128 ranges up to i128::MAX
 // ═══════════════════════════════════════════════════════════════════════════
 
 proptest! {
     #![proptest_config(config_1000())]
 
-    /// Invariant: no overflow for amounts up to i128::MAX / 10_001.
+    /// Invariant: no overflow for any valid amount across the full i128 range [1, i128::MAX]
+    /// and valid bps in [1, 10_000].
     ///
-    /// `checked_bps_amount` casts to u128 before multiplying, so overflow
-    /// can only occur if `amount * bps` overflows u128::MAX. Since
-    /// amount ≤ i128::MAX / 10_001 and bps ≤ 10_000:
-    ///   amount × bps ≤ (i128::MAX / 10_001) × 10_000 < u128::MAX.
+    /// `checked_bps_amount` uses quotient-remainder decomposition:
+    ///   floor(amount * bps / 10_000) = (amount / 10_000) * bps + ((amount % 10_000) * bps) / 10_000
+    /// which guarantees zero intermediate overflow for all valid i128 values.
     #[test]
-    fn prop_no_overflow_near_i128_max(
-        // Use a range well within the safe bound for CI speed
-        amount in (i128::MAX / 1_000_000)..=(i128::MAX / 10_001),
+    fn prop_no_overflow_all_i128_ranges(
+        amount in 1i128..=i128::MAX,
         bps in 1u32..=10_000u32,
     ) {
         let env = Env::default();
@@ -627,10 +629,9 @@ proptest! {
 
         // Use royalty path (pure arithmetic, no token transfer needed)
         client.set_royalty_rate(&bps);
-        let result = client.try_record_secondary_sale(&amount);
-        prop_assert!(result.is_ok(),
-            "unexpected overflow: amount={}, bps={}", amount, bps
-        );
+        let royalty = client.record_secondary_sale(&amount);
+        prop_assert!(royalty >= 0, "royalty negative: {}", royalty);
+        prop_assert!(royalty <= amount, "royalty {} exceeds amount {}", royalty, amount);
     }
 }
 
@@ -672,3 +673,277 @@ proptest! {
         prop_assert_eq!(remaining, 0i128);
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// §5  Comprehensive Basis Point Arithmetic & 1-100 Collaborator Invariants
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn pure_checked_bps(amount: i128, bps: u32) -> i128 {
+    if amount < 0 {
+        panic!("negative amount");
+    }
+    let u_amount = amount as u128;
+    let u_bps = bps as u128;
+    let q = u_amount / 10_000;
+    let r = u_amount % 10_000;
+    let term1 = q * u_bps;
+    let term2 = (r * u_bps) / 10_000;
+    (term1 + term2) as i128
+}
+
+proptest! {
+    #![proptest_config(config_1000())]
+
+    /// Invariant: pure basis point arithmetic is strictly bounded in [0, amount]
+    /// and exact across the entire i128 domain [0, i128::MAX].
+    #[test]
+    fn prop_bps_arithmetic_all_ranges(
+        amount in 0i128..=i128::MAX,
+        bps in 0u32..=10_000u32,
+    ) {
+        let result = pure_checked_bps(amount, bps);
+        prop_assert!(result >= 0, "result negative: {}", result);
+        prop_assert!(result <= amount, "result {} exceeds amount {}", result, amount);
+
+        if bps == 0 {
+            prop_assert_eq!(result, 0i128, "0 bps should yield 0");
+        }
+        if bps == 10_000 {
+            prop_assert_eq!(result, amount, "10_000 bps should yield full amount");
+        }
+    }
+
+    /// Invariant: 1 to 100 collaborator splits are strictly lossless across full i128 amounts,
+    /// and dust absorbed by the last recipient is strictly bounded in [0, n - 1].
+    #[test]
+    fn prop_multi_collaborator_splits_1_to_100(
+        n in 1usize..=100usize,
+        amount in 0i128..=i128::MAX,
+    ) {
+        // Build valid shares summing to 10_000
+        let base = 10_000u32 / n as u32;
+        let rem = 10_000u32 - base * n as u32;
+        let mut shares: Vec<u32> = (0..n).map(|_| base).collect();
+        *shares.last_mut().unwrap() += rem;
+
+        let mut total_calculated: i128 = 0;
+        let mut payouts: Vec<i128> = Vec::with_capacity(n);
+
+        for i in 0..(n - 1) {
+            let payout = pure_checked_bps(amount, shares[i]);
+            prop_assert!(payout >= 0, "individual payout negative: {}", payout);
+            prop_assert!(payout <= amount, "individual payout exceeds amount");
+            payouts.push(payout);
+            total_calculated += payout;
+        }
+
+        let last_payout = amount - total_calculated;
+        payouts.push(last_payout);
+
+        // Invariant 1: Total payout is strictly equal to input amount (lossless)
+        let total_payout: i128 = payouts.iter().sum();
+        prop_assert_eq!(total_payout, amount,
+            "total payout {} != amount {} (n={})", total_payout, amount, n
+        );
+
+        // Invariant 2: Total calculated for first (n-1) <= amount
+        prop_assert!(total_calculated <= amount, "total calculated exceeds amount");
+
+        // Invariant 3: Dust bounded by (n - 1) stroops
+        let last_pure = pure_checked_bps(amount, *shares.last().unwrap());
+        let dust = last_payout - last_pure;
+        prop_assert!(
+            dust >= 0 && dust <= (n as i128 - 1),
+            "dust {} out of bounds [0, {}] (n={}, amount={})",
+            dust, n - 1, n, amount
+        );
+    }
+}
+
+#[test]
+fn test_edge_cases_0_max_and_1_to_100_collaborators() {
+    // 1. 0 amount with 1 to 100 collaborators
+    for n in 1..=100 {
+        let base = 10_000u32 / n as u32;
+        let rem = 10_000u32 - base * n as u32;
+        let mut shares: Vec<u32> = (0..n).map(|_| base).collect();
+        *shares.last_mut().unwrap() += rem;
+
+        let mut total = 0i128;
+        for i in 0..(n - 1) {
+            let p = pure_checked_bps(0, shares[i]);
+            assert_eq!(p, 0);
+            total += p;
+        }
+        let last = 0i128 - total;
+        assert_eq!(last, 0);
+    }
+
+    // 2. i128::MAX with 1 collaborator (100% / 10_000 bps)
+    assert_eq!(pure_checked_bps(i128::MAX, 10_000), i128::MAX);
+
+    // 3. i128::MAX with 2 collaborators (5_000 bps each)
+    let p1 = pure_checked_bps(i128::MAX, 5_000);
+    let p2 = i128::MAX - p1;
+    assert_eq!(p1, i128::MAX / 2);
+    assert_eq!(p2, i128::MAX - (i128::MAX / 2));
+    assert_eq!(p1 + p2, i128::MAX);
+
+    // 4. i128::MAX with 100 collaborators (100 equal shares of 100 bps)
+    let n = 100;
+    let shares: Vec<u32> = (0..n).map(|_| 100u32).collect();
+    let mut total = 0i128;
+    for i in 0..(n - 1) {
+        let p = pure_checked_bps(i128::MAX, shares[i]);
+        assert_eq!(p, (i128::MAX as u128 / 100) as i128);
+        total += p;
+    }
+    let last = i128::MAX - total;
+    assert_eq!(total + last, i128::MAX);
+    let last_pure = pure_checked_bps(i128::MAX, 100);
+    let dust = last - last_pure;
+    assert!(dust >= 0 && dust <= (n as i128 - 1));
+
+    // 5. Test edge cases across every collaborator count from 1 to 100 with varying boundary amounts
+    let amounts_to_test = [0i128, 1, 2, 9_999, 10_000, 10_001, 1_000_000, i128::MAX / 2, i128::MAX];
+    for &amt in &amounts_to_test {
+        for n in 1..=100 {
+            let base = 10_000u32 / n as u32;
+            let rem = 10_000u32 - base * n as u32;
+            let mut shares: Vec<u32> = (0..n).map(|_| base).collect();
+            *shares.last_mut().unwrap() += rem;
+
+            let mut total_calculated = 0i128;
+            for i in 0..(n - 1) {
+                let p = pure_checked_bps(amt, shares[i]);
+                total_calculated += p;
+            }
+            let last_p = amt - total_calculated;
+            assert_eq!(total_calculated + last_p, amt);
+            let last_pure = pure_checked_bps(amt, *shares.last().unwrap());
+            let dust = last_p - last_pure;
+            assert!(dust >= 0 && dust <= (n as i128 - 1));
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// §6  Re-entrancy Resistance & State Transition Invariants (#837)
+// ═══════════════════════════════════════════════════════════════════════════
+
+proptest! {
+    #![proptest_config(config_100())]
+
+    /// Invariant: DistributeHistory counter strictly increments by 1 per distribution
+    /// and contract balance is drained to 0 in one atomic step. Subsequent distribution
+    /// without new funding immediately fails with Underfunded and preserves the counter.
+    #[test]
+    fn prop_distribute_history_monotonicity(
+        amount in 100i128..=1_000_000_000_000i128,
+        cycles in 1usize..=5usize,
+    ) {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (contract_id, client) = setup(&env);
+        let a = Address::generate(&env);
+        let b = Address::generate(&env);
+        let token_admin = Address::generate(&env);
+        let token = make_token(&env, &token_admin);
+
+        client.initialize(
+            &vec![&env, a.clone(), b.clone()],
+            &vec![&env, 6_000u32, 4_000u32],
+        );
+
+        prop_assert_eq!(client.get_distribute_count(), 0);
+
+        for c in 1..=cycles {
+            mint(&env, &token, &contract_id, amount);
+            client.distribute(&token);
+
+            prop_assert_eq!(client.get_distribute_count(), c as u64);
+
+            let rem = soroban_sdk::token::Client::new(&env, &token).balance(&contract_id);
+            prop_assert_eq!(rem, 0i128);
+
+            // Immediate re-distribution attempt fails without changing distribute count
+            let res = client.try_distribute(&token);
+            prop_assert_eq!(res, Err(Ok(ContractError::Underfunded)));
+            prop_assert_eq!(client.get_distribute_count(), c as u64);
+        }
+    }
+
+    /// Invariant: SecondaryPool is zeroed atomically prior to token payouts;
+    /// subsequent distribution calls fail with NoSecondaryRoyalties preventing double-drain.
+    #[test]
+    fn prop_secondary_pool_zeroed_atomic_transition(
+        royalty_amount in 100i128..=1_000_000_000i128,
+    ) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, client) = setup(&env);
+        let a = Address::generate(&env);
+        let b = Address::generate(&env);
+        let token_admin = Address::generate(&env);
+        let token = make_token(&env, &token_admin);
+        let payer = Address::generate(&env);
+
+        client.initialize(
+            &vec![&env, a.clone(), b.clone()],
+            &vec![&env, 5_000u32, 5_000u32],
+        );
+
+        mint(&env, &token, &payer, royalty_amount);
+        soroban_sdk::token::Client::new(&env, &token).approve(&payer, &contract_id, &royalty_amount, &200_000);
+
+        client.record_secondary_royalty(&token, &payer, &royalty_amount);
+        prop_assert_eq!(client.get_secondary_pool(), royalty_amount);
+
+        client.distribute_secondary();
+
+        // Secondary pool is strictly 0
+        prop_assert_eq!(client.get_secondary_pool(), 0);
+
+        // Immediate subsequent call must fail with NoSecondaryRoyalties (no double drain)
+        let res = client.try_distribute_secondary();
+        prop_assert_eq!(res, Err(Ok(ContractError::NoSecondaryRoyalties)));
+    }
+
+    /// Invariant: Batch distribution across m tokens atomically increments history count
+    /// by m and fully drains each token balance to 0 without cross-token state leakage.
+    #[test]
+    fn prop_batch_distribute_multi_token_invariants(
+        amount in 100i128..=10_000_000i128,
+        num_tokens in 1usize..=3usize,
+    ) {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (contract_id, client) = setup(&env);
+        let a = Address::generate(&env);
+        let b = Address::generate(&env);
+
+        client.initialize(
+            &vec![&env, a.clone(), b.clone()],
+            &vec![&env, 5_000u32, 5_000u32],
+        );
+
+        let mut token_addrs = soroban_sdk::Vec::new(&env);
+        for _ in 0..num_tokens {
+            let token_admin = Address::generate(&env);
+            let token = make_token(&env, &token_admin);
+            mint(&env, &token, &contract_id, amount);
+            token_addrs.push_back(token);
+        }
+
+        let initial_count = client.get_distribute_count();
+        client.batch_distribute(&token_addrs);
+
+        prop_assert_eq!(client.get_distribute_count(), initial_count + num_tokens as u64);
+
+        for t in token_addrs.iter() {
+            let rem = soroban_sdk::token::Client::new(&env, &t).balance(&contract_id);
+            prop_assert_eq!(rem, 0i128);
+        }
+    }
+}
+

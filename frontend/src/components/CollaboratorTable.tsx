@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef, useCallback } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import { TableSkeleton } from "./Skeleton";
 import CollaboratorAllocationChart from "./CollaboratorAllocationChart";
@@ -127,49 +128,81 @@ export default function CollaboratorTable({ contractId, refreshKey }: Props) {
   const [tierData, setTierData] = useState<Map<string, string> | null>(null);
 
   /* ── Fetch collaborators & analytics ─────────────────────────────────── */
+  /* ── React Query hooks — automatically cached and deduplicated (#832) ─── */
+  const queryClient = useQueryClient();
+
+  // Kick off collaborative + analytics fetches via the shared query cache.
+  // If Dashboard or EarningsDashboard has already fetched these for this
+  // contractId, the results are served from cache with zero network cost.
   useEffect(() => {
     if (!contractId) return;
-    setLoading(true);
-    setError("");
+    // Prefetch collaborators + analytics via the shared query client if they
+    // aren't already in cache (no-op when stale data is still fresh).
+    void queryClient.prefetchQuery({
+      queryKey: ["collaborators", contractId],
+      queryFn: () => api.getCollaborators(contractId),
+    });
+    void queryClient.prefetchQuery({
+      queryKey: ["analytics", contractId],
+      queryFn: () => api.getAnalytics(contractId),
+    });
+  }, [contractId, refreshKey, queryClient]);
 
-    const basePromise = api.getCollaborators(contractId);
-    // Best-effort analytics fetch for payment status
-    const analyticsPromise = api
-      .getAnalytics(contractId)
-      .then((res) => {
-        if (res.success && res.data.collaboratorStats) {
-          const map = new Map<string, number>();
-          for (const stat of res.data.collaboratorStats) {
-            map.set(stat.address, stat.payoutCount);
+  // Synchronously derive from cache (populated above or by sibling components)
+  const cachedCollaborators = queryClient.getQueryData<Awaited<ReturnType<typeof api.getCollaborators>>>(
+    ["collaborators", contractId]
+  );
+  const cachedAnalytics = queryClient.getQueryData<Awaited<ReturnType<typeof api.getAnalytics>>>(
+    ["analytics", contractId]
+  );
+
+  // Derive loading / error / data from the query states
+  const collabQueryState = queryClient.getQueryState(["collaborators", contractId]);
+  const analyticsQueryState = queryClient.getQueryState(["analytics", contractId]);
+
+  useEffect(() => {
+    const fetchStatus = collabQueryState?.status;
+    const analyticsStatus = analyticsQueryState?.status;
+
+    if (fetchStatus === "pending" || analyticsStatus === "pending") {
+      setLoading(true);
+      setError("");
+    } else {
+      setLoading(false);
+    }
+
+    if (fetchStatus === "error") {
+      const err = collabQueryState?.error;
+      setError(err instanceof Error ? err.message : "Failed to load collaborators");
+    }
+
+    if (cachedCollaborators) {
+      setCollaborators(cachedCollaborators);
+      setNames(loadNames(contractId));
+    }
+
+    if (cachedAnalytics?.success && cachedAnalytics.data.collaboratorStats) {
+      const map = new Map<string, number>();
+      for (const stat of cachedAnalytics.data.collaboratorStats) {
+        map.set(stat.address, stat.payoutCount);
+      }
+      setPaymentData(map);
+    }
+
+    // Best-effort tiers fetch (not yet a shared query hook)
+    if (contractId && fetchStatus !== "pending") {
+      api
+        .getContractTiers(contractId)
+        .then((res) => {
+          const map = new Map<string, string>();
+          for (const t of res.data ?? []) {
+            map.set(t.walletAddress, t.tier);
           }
-          return map;
-        }
-        return null;
-      })
-      .catch(() => null);
-
-    // Best-effort tiers fetch
-    const tiersPromise = api
-      .getContractTiers(contractId)
-      .then((res) => {
-        const map = new Map<string, string>();
-        for (const t of res.data ?? []) {
-          map.set(t.walletAddress, t.tier);
-        }
-        return map;
-      })
-      .catch(() => null);
-
-    Promise.all([basePromise, analyticsPromise, tiersPromise])
-      .then(([collabData, payData, tierData]) => {
-        setCollaborators(collabData);
-        setNames(loadNames(contractId));
-        setPaymentData(payData);
-        setTierData(tierData);
-      })
-      .catch((e: Error) => setError(e.message))
-      .finally(() => setLoading(false));
-  }, [contractId, refreshKey, retryCount]);
+          setTierData(map);
+        })
+        .catch(() => null);
+    }
+  }, [contractId, cachedCollaborators, cachedAnalytics, collabQueryState?.status, analyticsQueryState?.status]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /* ── Debounced search ────────────────────────────────────────────────── */
   useEffect(() => {

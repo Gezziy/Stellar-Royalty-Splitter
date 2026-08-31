@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { api, TransactionRecord } from "../api";
 import "./TransactionHistory.css";
 import { formatNumber } from "../utils/format";
@@ -7,6 +8,7 @@ import { TransactionDetailView } from "./TransactionDetailView";
 import { getStellarExpertTxUrl, formatTxHash } from "../lib/explorer";
 import { useNetwork } from "../context/NetworkContext";
 import { ListSkeleton } from "./Skeleton";
+import { useTransactionHistory } from "../hooks/queries/useTransactionHistory";
 
 interface TransactionHistoryProps {
   contractId: string;
@@ -44,11 +46,8 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
   onSelectTxHash,
 }) => {
   const { network } = useNetwork();
-  const [transactions, setTransactions] = useState<TransactionRecord[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
   const [offset, setOffset] = useState(0);
-  const [total, setTotal] = useState(0);
   const [localSelectedTxHash, setLocalSelectedTxHash] = useState<string | null>(null);
 
   // Per-row "refresh status" state (#712): tracks which pending transaction's
@@ -82,6 +81,29 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
 
   const activeTxHash = propSelectedTxHash !== undefined ? propSelectedTxHash : localSelectedTxHash;
 
+  // Build API filter object from current filter state
+  const apiFilters = (() => {
+    const f: Parameters<typeof api.getTransactionHistory>[3] = {};
+    if (filters.type) f.type = filters.type as "distribute" | "initialize";
+    if (filters.recipient) f.recipient = filters.recipient;
+    if (filters.startDate) f.startDate = filters.startDate;
+    if (filters.endDate) f.endDate = filters.endDate;
+    return f;
+  })();
+
+  // React Query hook — automatically cached and deduplicated (#832)
+  const {
+    data: historyData,
+    isLoading: loading,
+    isError,
+    error: queryError,
+    refetch,
+  } = useTransactionHistory(contractId, LIMIT, offset, apiFilters);
+
+  const transactions: TransactionRecord[] = historyData?.data ?? [];
+  const total = historyData?.pagination?.total ?? 0;
+  const error = isError ? (queryError as Error)?.message ?? "Failed to fetch history" : null;
+
   const hasActiveFilters =
     filters.type !== "" ||
     filters.recipient !== "" ||
@@ -98,26 +120,6 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
       setLocalSelectedTxHash(hash);
     }
   }
-
-  const fetchHistory = async (activeFilters = filters) => {
-    setLoading(true);
-    setError(null);
-    try {
-      const apiFilters: Parameters<typeof api.getTransactionHistory>[3] = {};
-      if (activeFilters.type) apiFilters.type = activeFilters.type as "distribute" | "initialize";
-      if (activeFilters.recipient) apiFilters.recipient = activeFilters.recipient;
-      if (activeFilters.startDate) apiFilters.startDate = activeFilters.startDate;
-      if (activeFilters.endDate) apiFilters.endDate = activeFilters.endDate;
-
-      const result = await api.getTransactionHistory(contractId, LIMIT, offset, apiFilters);
-      setTransactions(result.data || []);
-      setTotal(result.pagination?.total ?? 0);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to fetch history");
-    } finally {
-      setLoading(false);
-    }
-  };
 
   // #712: safely re-check a pending/delayed transaction's status against
   // Horizon. Never marks a transaction confirmed on the client's say-so —
@@ -137,7 +139,8 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
         txHash: tx.txHash,
         text: result.message ?? "Status updated.",
       });
-      await fetchHistory(filters);
+      // Invalidate the cache so React Query refetches the updated status
+      void queryClient.invalidateQueries({ queryKey: ["txHistory", contractId] });
     } catch (err) {
       // A failed refresh (including a Horizon polling timeout) means the
       // transaction's true status still isn't known — not that anything is
@@ -278,9 +281,8 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
     }
   };
 
+  // Reset offset when the contract changes
   useEffect(() => { setOffset(0); }, [contractId]);
-  // Re-fetch when offset or active filters change
-  useEffect(() => { fetchHistory(filters); }, [contractId, offset, filters]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const TYPE_LABELS: Record<string, string> = {
     distribute: "Primary Distribution",
@@ -353,7 +355,7 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
           >
             ↓ Export CSV
           </button>
-          <button onClick={() => fetchHistory(filters)} disabled={loading}>
+          <button onClick={() => void refetch()} disabled={loading}>
             {loading ? "Refreshing..." : "Refresh"}
           </button>
         </div>
@@ -541,7 +543,7 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
           <button
             type="button"
             className="retry-btn"
-            onClick={() => void fetchHistory(filters)}
+            onClick={() => void refetch()}
             disabled={loading}
           >
             Retry

@@ -6324,141 +6324,142 @@ fn test_pause_operation_requires_admin_auth() {
     client.pause_operation(&OperationType::PrimaryDistribution);
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// #894 — Collaborative signing & threshold approval integration tests
-// ─────────────────────────────────────────────────────────────────────────
+// =============================================================================
+// Issue #838 — Emergency pause mechanism with multi-sig requirement (M-of-N)
+// =============================================================================
 
+/// M-of-N scenario (M=2, N=3): 2 of 3 authorized emergency pause signers successfully
+/// trigger immediate emergency pause, blocking distributions without timelock,
+/// and admin successfully revokes the pause via unpause().
 #[test]
-fn test_collaborative_operation_proposal_multisig_workflow() {
+fn test_emergency_pause_multisig_2_of_3_scenario() {
     let env = Env::default();
-    env.mock_all_auths();
-    let (_, client) = setup(&env);
-    let admin1 = Address::generate(&env);
-    let admin2 = Address::generate(&env);
-    let admin3 = Address::generate(&env);
+    env.mock_all_auths_allowing_non_root_auth();
+    let (contract_id, client) = setup(&env);
+
+    let admin = Address::generate(&env);
     let b = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = make_token(&env, &token_admin);
 
     client.initialize(
-        &vec![&env, admin1.clone(), b.clone()],
+        &vec![&env, admin.clone(), b.clone()],
         &vec![&env, 5000_u32, 5000_u32],
     );
 
-    // Configure 2-of-3 multi-admin
-    let admins = vec![&env, admin1.clone(), admin2.clone(), admin3.clone()];
-    client.set_admins(&admins, &2_u32);
+    let s1 = Address::generate(&env);
+    let s2 = Address::generate(&env);
+    let s3 = Address::generate(&env);
+    let signers = vec![&env, s1.clone(), s2.clone(), s3.clone()];
 
-    // Initial state
-    assert!(!client.is_paused());
+    // Configure M=2 of N=3
+    client.set_emergency_pause_signers(&signers, &2);
+    assert_eq!(client.get_emergency_pause_signers(), signers);
+    assert_eq!(client.get_emergency_pause_threshold(), 2);
+    assert!(!client.is_emergency_paused());
 
-    // Admin 1 proposes Pause operation
-    let prop_id = client.propose_operation(&admin1, &SensitiveOperation::Pause, &3600_u64);
-    assert_eq!(prop_id, 1);
+    // Emergency incident: 2 authorized signers (s2 and s3) trigger pause immediately
+    let active_signers = vec![&env, s2.clone(), s3.clone()];
+    client.emergency_pause(&active_signers);
 
-    // 1 of 2 threshold -> not yet paused
-    let prop = client.get_operation_proposal(&prop_id);
-    assert_eq!(prop.threshold, 2);
-    assert_eq!(prop.approvals_count, 1);
-    assert!(!prop.executed);
-    assert!(!client.is_paused());
+    // Immediately paused (no timelock)
+    assert!(client.is_emergency_paused());
 
-    // Admin 2 approves -> threshold reached (2 of 2) -> executes Pause
-    let executed = client.approve_operation(&admin2, &prop_id);
-    assert!(executed);
-    assert!(client.is_paused());
+    // Distributions are blocked
+    mint(&env, &token, &contract_id, 1_000);
+    let res = client.try_distribute(&token);
+    assert_eq!(res, Err(Ok(ContractError::EmergencyContractPaused.into())));
 
-    let prop_after = client.get_operation_proposal(&prop_id);
-    assert_eq!(prop_after.approvals_count, 2);
-    assert!(prop_after.executed);
+    // Admin revokes emergency pause via unpause()
+    client.unpause();
+    assert!(!client.is_emergency_paused());
 
-    // Unpause proposal workflow
-    let unpause_id = client.propose_operation(&admin3, &SensitiveOperation::Unpause, &3600_u64);
-    assert_eq!(unpause_id, 2);
-    assert!(client.is_paused());
-
-    let unpause_executed = client.approve_operation(&admin1, &unpause_id);
-    assert!(unpause_executed);
-    assert!(!client.is_paused());
+    // Distributions now execute cleanly
+    client.distribute(&token);
+    assert_eq!(client.get_distribute_count(), 1);
 }
 
+/// Revoking multi-sig emergency pause via clear_emergency_pause().
 #[test]
-fn test_collaborative_operation_proposal_duplicate_and_unauthorized_rejections() {
+fn test_emergency_pause_multisig_clear_by_admin() {
     let env = Env::default();
-    env.mock_all_auths();
-    let (_, client) = setup(&env);
-    let admin1 = Address::generate(&env);
-    let admin2 = Address::generate(&env);
+    env.mock_all_auths_allowing_non_root_auth();
+    let (contract_id, client) = setup(&env);
+
+    let admin = Address::generate(&env);
     let b = Address::generate(&env);
-    let unauthorized = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = make_token(&env, &token_admin);
 
     client.initialize(
-        &vec![&env, admin1.clone(), b.clone()],
+        &vec![&env, admin.clone(), b.clone()],
         &vec![&env, 5000_u32, 5000_u32],
     );
 
-    let admins = vec![&env, admin1.clone(), admin2.clone()];
-    client.set_admins(&admins, &2_u32);
+    let s1 = Address::generate(&env);
+    let s2 = Address::generate(&env);
+    let s3 = Address::generate(&env);
 
-    // Non-admin cannot propose
-    assert_eq!(
-        client.try_propose_operation(&unauthorized, &SensitiveOperation::Pause, &3600_u64),
-        Err(Ok(ContractError::UnauthorizedSigner.into()))
-    );
+    client.set_emergency_pause_signers(&vec![&env, s1.clone(), s2.clone(), s3.clone()], &2);
 
-    let prop_id = client.propose_operation(&admin1, &SensitiveOperation::Pause, &3600_u64);
+    // Pause with s1 and s2
+    client.emergency_pause(&vec![&env, s1.clone(), s2.clone()]);
+    assert!(client.is_emergency_paused());
 
-    // Non-admin cannot approve
-    assert_eq!(
-        client.try_approve_operation(&unauthorized, &prop_id),
-        Err(Ok(ContractError::UnauthorizedSigner.into()))
-    );
+    // Clear via clear_emergency_pause()
+    client.clear_emergency_pause();
+    assert!(!client.is_emergency_paused());
 
-    // Proposer cannot double-approve
-    assert_eq!(
-        client.try_approve_operation(&admin1, &prop_id),
-        Err(Ok(ContractError::AlreadyApproved.into()))
-    );
-
-    // Admin 2 approves -> executes
-    client.approve_operation(&admin2, &prop_id);
-
-    // Replay / already executed proposal cannot be approved again
-    assert_eq!(
-        client.try_approve_operation(&admin2, &prop_id),
-        Err(Ok(ContractError::ProposalAlreadyExecuted.into()))
-    );
+    mint(&env, &token, &contract_id, 2_000);
+    client.distribute(&token);
+    assert_eq!(client.get_distribute_count(), 1);
 }
 
+/// Rejection of invalid signers, duplicate signers, and sub-threshold attempts.
 #[test]
-fn test_collaborative_operation_proposal_expiration() {
+fn test_emergency_pause_multisig_threshold_and_signer_validations() {
     let env = Env::default();
-    env.mock_all_auths();
-    let (_, client) = setup(&env);
-    let admin1 = Address::generate(&env);
-    let admin2 = Address::generate(&env);
+    env.mock_all_auths_allowing_non_root_auth();
+    let (_contract_id, client) = setup(&env);
+
+    let admin = Address::generate(&env);
     let b = Address::generate(&env);
 
     client.initialize(
-        &vec![&env, admin1.clone(), b.clone()],
+        &vec![&env, admin.clone(), b.clone()],
         &vec![&env, 5000_u32, 5000_u32],
     );
 
-    let admins = vec![&env, admin1.clone(), admin2.clone()];
-    client.set_admins(&admins, &2_u32);
+    let s1 = Address::generate(&env);
+    let s2 = Address::generate(&env);
+    let s3 = Address::generate(&env);
+    let rogue = Address::generate(&env);
 
-    env.ledger().with_mut(|l| l.timestamp = 5_000);
-    let prop_id = client.propose_operation(
-        &admin1,
-        &SensitiveOperation::SetRoyaltyRate(750_u32),
-        &3600_u64,
-    );
+    // M=2 of N=3
+    client.set_emergency_pause_signers(&vec![&env, s1.clone(), s2.clone(), s3.clone()], &2);
 
-    // Advance time past expiration
-    env.ledger().with_mut(|l| l.timestamp = 5_000 + 3600 + 1);
-
-    // Approval after expiration fails
+    // 1 signer provided when threshold is 2 -> rejected
+    let res_insufficient = client.try_emergency_pause(&vec![&env, s1.clone()]);
     assert_eq!(
-        client.try_approve_operation(&admin2, &prop_id),
-        Err(Ok(ContractError::ProposalExpired.into()))
+        res_insufficient,
+        Err(Ok(ContractError::InvalidEmergencyPauseThreshold.into()))
     );
-    assert_ne!(client.get_royalty_rate(), 750);
+
+    // Rogue non-signer provided -> rejected
+    let res_unauthorized = client.try_emergency_pause(&vec![&env, s1.clone(), rogue]);
+    assert_eq!(
+        res_unauthorized,
+        Err(Ok(ContractError::UnauthorizedEmergencySigner.into()))
+    );
+
+    // Duplicate signer provided -> rejected
+    let res_duplicate = client.try_emergency_pause(&vec![&env, s1.clone(), s1.clone()]);
+    assert_eq!(
+        res_duplicate,
+        Err(Ok(ContractError::DuplicateRecipient.into()))
+    );
+
+    // Contract remains unpaused
+    assert!(!client.is_emergency_paused());
 }
+

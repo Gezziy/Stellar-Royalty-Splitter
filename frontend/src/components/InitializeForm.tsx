@@ -9,6 +9,7 @@ import ValidationSummary, {
 } from "./ValidationSummary";
 import { useFormStatus } from "../hooks/useFormStatus";
 import { useRoyaltyDraft } from "../hooks/useRoyaltyDraft";
+import { RoyaltyPayoutPreview } from "./RoyaltyPayoutPreview";
 import {
   parseRoyaltyConfigImport,
   RoyaltyConfigImportError,
