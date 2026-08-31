@@ -415,13 +415,13 @@ impl RoyaltySplitter {
             .ok_or(ContractError::NoShareMap)
     }
 
-    fn checked_add_share_total(env: &Env, total: u32, share: u32) -> Result<u32, ContractError> {
+    fn checked_add_share_total(_env: &Env, total: u32, share: u32) -> Result<u32, ContractError> {
         total
             .checked_add(share)
             .ok_or(ContractError::ArithmeticOverflow)
     }
 
-    fn checked_bps_amount(env: &Env, amount: i128, bps: u32) -> Result<i128, ContractError> {
+    fn checked_bps_amount(_env: &Env, amount: i128, bps: u32) -> Result<i128, ContractError> {
         if amount < 0 {
             return Err(ContractError::ArithmeticOverflow);
         }
@@ -448,7 +448,7 @@ impl RoyaltySplitter {
         }
 
         let defaults: Vec<Recipient> =
-            storage::persistent_get(env, &StorageKey::DefaultRecipients).unwrap_or(Vec::new(&env));
+            storage::persistent_get(env, &StorageKey::DefaultRecipients).unwrap_or(Vec::new(env));
         if !defaults.is_empty() {
             return Ok(defaults);
         }
@@ -479,7 +479,10 @@ impl RoyaltySplitter {
 
         let mut payouts = Vec::new(env);
         let mut total_calculated: i128 = 0;
-        let last_index = recipients.len() - 1;
+        let last_index = recipients
+            .len()
+            .checked_sub(1)
+            .ok_or(ContractError::EmptyRecipients)?;
         for index in 0..recipients.len() {
             let recipient = recipients.get(index).unwrap_optimized();
             let payout = if index == last_index {
@@ -858,7 +861,12 @@ impl RoyaltySplitter {
             .map_err(|_| ContractError::NotInitialized)?;
         let quote = quote.ok_or(ContractError::NotInitialized)?;
         let now = env.ledger().timestamp();
-        if quote.timestamp > now || now - quote.timestamp > config.max_staleness {
+        if quote.timestamp > now
+            || now
+                .checked_sub(quote.timestamp)
+                .ok_or(ContractError::NotInitialized)?
+                > config.max_staleness
+        {
             return Err(ContractError::NotInitialized);
         }
         if quote.price <= 0 || decimals > 18 {
@@ -887,7 +895,12 @@ impl RoyaltySplitter {
             .get(&StorageKey::OracleConfig)
             .ok_or(ContractError::NotInitialized)?;
         let now = env.ledger().timestamp();
-        if config.last_updated != 0 && now - config.last_updated < config.update_frequency {
+        if config.last_updated != 0
+            && now
+                .checked_sub(config.last_updated)
+                .ok_or(ContractError::NotInitialized)?
+                < config.update_frequency
+        {
             return Err(ContractError::NotInitialized);
         }
         let rate = Self::fetch_royalty_rate_from_oracle(env.clone())?;
@@ -952,14 +965,14 @@ impl RoyaltySplitter {
         );
     }
 
-    pub fn accept_admin(env: Env) {
+    pub fn accept_admin(env: Env) -> Result<(), ContractError> {
         storage::extend_instance_ttl(&env);
 
         let pending: Address = env
             .storage()
             .instance()
             .get(&StorageKey::PendingAdmin)
-            .expect("no pending admin transfer");
+            .ok_or(ContractError::ProposalNotFound)?;
 
         let context = String::from_str(&env, auth::msg::ACCEPT_ADMIN_PENDING);
         env.events().publish((symbol_short!("auth_req"),), context);
@@ -969,7 +982,7 @@ impl RoyaltySplitter {
             .storage()
             .instance()
             .get(&StorageKey::Admin)
-            .expect("not initialized");
+            .ok_or(ContractError::NotInitialized)?;
 
         storage::instance_set(&env, &StorageKey::Admin, &pending);
         env.storage().instance().remove(&StorageKey::PendingAdmin);
@@ -978,6 +991,7 @@ impl RoyaltySplitter {
             (symbol_short!("royalty"), symbol_short!("adm_acc")),
             (previous_admin, pending),
         );
+        Ok(())
     }
 
     pub fn unpause(env: Env) -> Result<(), ContractError> {
@@ -1203,27 +1217,26 @@ impl RoyaltySplitter {
         token: Address,
         override_recipients: Vec<Recipient>,
     ) -> Result<(), ContractError> {
-
-        if Self::is_emergency_paused_flag(&env) {
+        if Self::is_emergency_paused_flag(env) {
             return Err(ContractError::EmergencyContractPaused);
         }
-        if Self::is_blocked(&env, OperationType::PrimaryDistribution) {
+        if Self::is_blocked(env, OperationType::PrimaryDistribution) {
             return Err(ContractError::ContractPaused);
         }
-        Self::require_approved_token(&env, &token)?; // #840
+        Self::require_approved_token(env, &token)?; // #840
 
-        let token_client = token::Client::new(&env, &token);
+        let token_client = token::Client::new(env, &token);
         let amount = token_client.balance(&env.current_contract_address());
         if amount == 0 {
             return Err(ContractError::Underfunded);
         }
 
-        if Self::trip_anomaly_pause_if_exceeded(&env, &token, amount) {
+        if Self::trip_anomaly_pause_if_exceeded(env, &token, amount) {
             return Ok(());
         }
 
-        let recipients_to_use = Self::resolve_recipients(&env, override_recipients)?;
-        let payouts = Self::calculate_payouts(&env, amount, &recipients_to_use)?;
+        let recipients_to_use = Self::resolve_recipients(env, override_recipients)?;
+        let payouts = Self::calculate_payouts(env, amount, &recipients_to_use)?;
 
         for (addr, payout) in payouts.iter() {
             token_client.transfer(&env.current_contract_address(), &addr, &payout);
@@ -1239,7 +1252,7 @@ impl RoyaltySplitter {
         );
 
         storage::instance_set(
-            &env,
+            env,
             &StorageKey::LastDistribution,
             &env.ledger().timestamp(),
         );
@@ -1251,7 +1264,7 @@ impl RoyaltySplitter {
             .unwrap_or(0);
 
         let new_count = current_count.saturating_add(1);
-        storage::instance_set(&env, &StorageKey::DistributeHistory, &new_count);
+        storage::instance_set(env, &StorageKey::DistributeHistory, &new_count);
         Ok(())
     }
 
@@ -1278,7 +1291,7 @@ impl RoyaltySplitter {
 
         env.events().publish(
             (symbol_short!("royalty"), symbol_short!("dist_strt")),
-            (token.clone(), amount, n as u32),
+            (token.clone(), amount, n),
         );
 
         let mut failed: Vec<Address> = Vec::new(&env);
@@ -1288,7 +1301,9 @@ impl RoyaltySplitter {
         for (addr, payout) in payouts.iter() {
             match token_client.try_transfer(&env.current_contract_address(), &addr, &payout) {
                 Ok(Ok(())) => {
-                    succeeded += 1;
+                    succeeded = succeeded
+                        .checked_add(1)
+                        .ok_or(ContractError::ArithmeticOverflow)?;
                     distributed = distributed
                         .checked_add(payout)
                         .ok_or(ContractError::ArithmeticOverflow)?;
@@ -1445,7 +1460,8 @@ impl RoyaltySplitter {
             let mut payouts: Vec<(Address, i128)> = Vec::new(&env);
             let mut total_calculated: i128 = 0;
 
-            for i in 0..(n - 1) {
+            let last_index = n.checked_sub(1).ok_or(ContractError::EmptyRecipients)?;
+            for i in 0..last_index {
                 let recipient = recipients_to_use.get(i).unwrap();
                 let payout = Self::checked_bps_amount(&env, amount, recipient.share)?;
                 payouts.push_back((recipient.address.clone(), payout));
@@ -1454,7 +1470,7 @@ impl RoyaltySplitter {
                     .ok_or(ContractError::ArithmeticOverflow)?;
             }
 
-            let last = recipients_to_use.get(n - 1).unwrap();
+            let last = recipients_to_use.get(last_index).unwrap();
             payouts.push_back((
                 last.address.clone(),
                 amount
@@ -1621,7 +1637,8 @@ impl RoyaltySplitter {
         let mut payouts: Vec<(Address, i128)> = Vec::new(&env);
         let mut total_calculated: i128 = 0;
 
-        for i in 0..(n - 1) {
+        let last_index = n.checked_sub(1).ok_or(ContractError::NoCollaborators)?;
+        for i in 0..last_index {
             let addr = collaborators.get(i).unwrap_optimized();
             let share = share_map.get(addr.clone()).unwrap_or(0);
             let payout = Self::checked_bps_amount(&env, pool, share)?;
@@ -1631,7 +1648,7 @@ impl RoyaltySplitter {
                 .ok_or(ContractError::ArithmeticOverflow)?;
         }
 
-        let last = collaborators.get(n - 1).unwrap();
+        let last = collaborators.get(last_index).unwrap();
         payouts.push_back((
             last,
             pool.checked_sub(total_calculated)
@@ -1872,7 +1889,7 @@ impl RoyaltySplitter {
         if threshold < 1 {
             panic!("threshold must be at least 1");
         }
-        if threshold > admins.len() as u32 {
+        if threshold > admins.len() {
             panic!("threshold > admin count");
         }
 
@@ -2000,19 +2017,29 @@ impl RoyaltySplitter {
             let scaled = if total_bonus == effective_total {
                 raw
             } else {
-                ((raw as u64) * (effective_total as u64) / (total_bonus as u64)) as u32
+                (u64::from(raw)
+                    .checked_mul(u64::from(effective_total))
+                    .expect("incentive scaling overflow")
+                    .checked_div(u64::from(total_bonus))
+                    .expect("total bonus must be non-zero")) as u32
             };
             scaled_bonuses.push_back(scaled);
             scaled_sum = scaled_sum.saturating_add(scaled);
         }
 
-        let pool_bps = 10_000u32 - scaled_sum;
+        let pool_bps = 10_000u32
+            .checked_sub(scaled_sum)
+            .expect("scaled incentive sum exceeds total basis points");
 
         let mut adjusted: Vec<Recipient> = Vec::new(&env);
         let mut assigned_total: u32 = 0;
-        for i in 0..(n - 1) {
+        let last_index = n.checked_sub(1).expect("base recipients must be non-empty");
+        for i in 0..last_index {
             let r = base.get(i).unwrap();
-            let shrunk_base = ((r.share as u64) * (pool_bps as u64) / 10_000) as u32;
+            let shrunk_base = (u64::from(r.share)
+                .checked_mul(u64::from(pool_bps))
+                .expect("base share scaling overflow")
+                / 10_000) as u32;
             let new_share = shrunk_base.saturating_add(scaled_bonuses.get(i).unwrap());
             assigned_total = assigned_total.saturating_add(new_share);
             adjusted.push_back(Recipient {
@@ -2021,7 +2048,7 @@ impl RoyaltySplitter {
             });
         }
 
-        let last = base.get(n - 1).unwrap();
+        let last = base.get(last_index).unwrap();
         let last_share = 10_000u32
             .checked_sub(assigned_total)
             .expect("arithmetic overflow in incentive adjustment");
@@ -2067,7 +2094,8 @@ impl RoyaltySplitter {
 
         let mut payouts: Vec<(Address, i128)> = Vec::new(&env);
         let mut total_calculated: i128 = 0;
-        for i in 0..(n - 1) {
+        let last_index = n.checked_sub(1).ok_or(ContractError::EmptyRecipients)?;
+        for i in 0..last_index {
             let recipient = recipients.get(i).unwrap();
             let payout = Self::checked_bps_amount(&env, amount, recipient.share)?;
             payouts.push_back((recipient.address.clone(), payout));
@@ -2075,7 +2103,7 @@ impl RoyaltySplitter {
                 .checked_add(payout)
                 .ok_or(ContractError::ArithmeticOverflow)?;
         }
-        let last = recipients.get(n - 1).unwrap();
+        let last = recipients.get(last_index).unwrap();
         payouts.push_back((
             last.address.clone(),
             amount
@@ -2197,7 +2225,7 @@ impl RoyaltySplitter {
 
         Self::check_admin_auth(&env, auth::msg::SET_ADMIN_ROTATION_TIMELOCK_ADMIN);
 
-        if seconds < MIN_ADMIN_ROTATION_TIMELOCK || seconds > MAX_ADMIN_ROTATION_TIMELOCK {
+        if !(MIN_ADMIN_ROTATION_TIMELOCK..=MAX_ADMIN_ROTATION_TIMELOCK).contains(&seconds) {
             panic!("invalid timelock duration");
         }
 
@@ -2363,7 +2391,7 @@ impl RoyaltySplitter {
     }
 
     fn validate_default_rcpt_bps(
-        env: &Env,
+        _env: &Env,
         recipients: &Vec<Recipient>,
     ) -> Result<(), ContractError> {
         for i in 0..recipients.len() {
@@ -2505,8 +2533,10 @@ impl RoyaltySplitter {
         let mut disputes: Map<u64, Dispute> =
             storage::persistent_get::<Map<u64, Dispute>>(&env, &StorageKey::Disputes)
                 .unwrap_or(Map::new(&env));
-        let next_id: u64 =
-            storage::persistent_get::<u64>(&env, &StorageKey::DisputeCount).unwrap_or(0) + 1;
+        let next_id: u64 = storage::persistent_get::<u64>(&env, &StorageKey::DisputeCount)
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or(ContractError::ArithmeticOverflow)?;
 
         let dispute = Dispute {
             transaction_id,
@@ -2647,13 +2677,15 @@ impl RoyaltySplitter {
         if new_rate > 10_000 {
             return Err(ContractError::RoyaltyRateTooHigh);
         }
-        if duration < MIN_PROPOSAL_DURATION || duration > MAX_PROPOSAL_DURATION {
+        if !(MIN_PROPOSAL_DURATION..=MAX_PROPOSAL_DURATION).contains(&duration) {
             return Err(ContractError::InvalidProposalDuration);
         }
 
         let now = env.ledger().timestamp();
-        let id: u64 =
-            storage::instance_get::<u64>(&env, &StorageKey::ProposalCount).unwrap_or(0) + 1;
+        let id: u64 = storage::instance_get::<u64>(&env, &StorageKey::ProposalCount)
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or(ContractError::ArithmeticOverflow)?;
 
         let proposal = Proposal {
             id,
@@ -2857,6 +2889,7 @@ impl RoyaltySplitter {
 
     /// Record a distribution operation on-chain for audit trail (#775).
     /// Called internally after successful distribute operations.
+    #[allow(dead_code)]
     fn record_distribution(
         env: &Env,
         token: Address,
@@ -2864,7 +2897,7 @@ impl RoyaltySplitter {
         recipient_count: u32,
         status: &String,
     ) -> Result<u64, ContractError> {
-        let id: u64 = storage::instance_get::<u64>(&env, &StorageKey::DistributionRecordCount)
+        let id: u64 = storage::instance_get::<u64>(env, &StorageKey::DistributionRecordCount)
             .unwrap_or(0)
             .checked_add(1)
             .ok_or(ContractError::ArithmeticOverflow)?;
@@ -2952,13 +2985,14 @@ impl RoyaltySplitter {
 
     /// Update pending distribution amount for a token. Used internally during
     /// distribution cycles to track what's awaiting payout. (#775)
+    #[allow(dead_code)]
     fn update_pending_amount(
         env: &Env,
         token: Address,
         amount: i128,
         recipient_count: u32,
     ) -> Result<(), ContractError> {
-        let mut pending: Vec<PendingDistribution> =
+        let pending: Vec<PendingDistribution> =
             storage::persistent_get(env, &StorageKey::PendingDistributions)
                 .unwrap_or(Vec::new(env));
 
@@ -3173,7 +3207,7 @@ impl RoyaltySplitter {
             return Err(ContractError::UnauthorizedSigner);
         }
 
-        if duration < MIN_PROPOSAL_DURATION || duration > MAX_PROPOSAL_DURATION {
+        if !(MIN_PROPOSAL_DURATION..=MAX_PROPOSAL_DURATION).contains(&duration) {
             return Err(ContractError::InvalidProposalDuration);
         }
 
@@ -3209,7 +3243,8 @@ impl RoyaltySplitter {
         let now = env.ledger().timestamp();
         let id: u64 = storage::instance_get::<u64>(&env, &StorageKey::OperationProposalCount)
             .unwrap_or(0)
-            + 1;
+            .checked_add(1)
+            .ok_or(ContractError::ArithmeticOverflow)?;
         let threshold = Self::get_current_threshold(&env);
 
         let mut proposal = OperationProposal {
