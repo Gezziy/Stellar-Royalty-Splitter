@@ -34,6 +34,23 @@ const metrics = {
 
 // Comprehensive Prometheus metrics (#816)
 const register = new client.Registry();
+client.collectDefaultMetrics({ register });
+
+// HTTP request metrics used by the operational dashboard and alert rules.
+const httpRequests = new client.Counter({
+  name: "http_requests_total",
+  help: "Total HTTP requests handled by the API",
+  labelNames: ["method", "route", "status"],
+  registers: [register],
+});
+
+const httpRequestDuration = new client.Histogram({
+  name: "http_request_duration_seconds",
+  help: "HTTP request duration in seconds",
+  labelNames: ["method", "route", "status"],
+  buckets: [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10],
+  registers: [register],
+});
 
 // Counter for function invocations
 const contractFunctionDuration = new client.Histogram({
@@ -564,6 +581,14 @@ export function resetMetrics() {
 }
 
 // New comprehensive metrics functions (#816)
+export function recordHttpRequest(method, route, status, durationMs) {
+  const labels = { method, route: route || "unknown", status: String(status) };
+  httpRequests.inc(labels);
+  if (Number.isFinite(durationMs) && durationMs >= 0) {
+    httpRequestDuration.observe(labels, durationMs / 1000);
+  }
+}
+
 export function recordContractFunctionDuration(contractId, functionName, durationSeconds) {
   contractFunctionDuration.observe({ contractId, functionName }, durationSeconds);
 }

@@ -60,6 +60,7 @@ import { startSnapshotScheduler } from "./jobs/snapshot-job.js";
 import { startWebhookRetryScheduler } from "./jobs/retry-failed-webhooks.js";
 import { adminApiKeysRouter } from "./routes/admin-api-keys.js";
 import { recordApiKeyRequest } from "./database/rate-limit.js";
+import { recordHttpRequest } from "./metrics.js";
 import { createMetricsPusher } from "./metrics-pushgateway.js";
 import { transactionFinalityRouter } from "./routes/transaction-finality.js";
 import { startFinalityCleanupScheduler } from "./jobs/finality-cleanup-job.js";
