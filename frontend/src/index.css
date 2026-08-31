@@ -46,7 +46,7 @@ h2 {
   padding: 2px 8px;
   border-radius: 999px;
   background: var(--accent-primary-light);
-  color: var(--info);
+  color: #1d4ed8;
   margin-bottom: 1rem;
 }
 
@@ -96,8 +96,8 @@ button:disabled {
 }
 
 .btn-primary {
-  background: var(--info);
-  color: var(--text-inverse);
+  background: #1d4ed8;
+  color: #ffffff;
 }
 .btn-primary:hover:not(:disabled) {
   opacity: 0.85;
