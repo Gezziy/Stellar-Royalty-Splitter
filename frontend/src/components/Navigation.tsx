@@ -23,7 +23,8 @@ export const Navigation: React.FC<NavigationProps> = ({
   const { t } = useTranslation();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [copied, setCopied] = useState(false);
-  const { isDark, toggleTheme } = useTheme();
+  const isDark = useUIStore((s) => s.isDark);
+  const toggleTheme = useUIStore((s) => s.toggleTheme);
   const { network, setNetwork } = useNetwork();
 
   // Close mobile menu on Escape and prevent body scroll while open

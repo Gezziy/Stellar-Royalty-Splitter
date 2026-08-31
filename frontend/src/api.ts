@@ -409,6 +409,20 @@ export const api = {
       keypair,
     ),
 
+  setSecondaryPoolLimit: (
+    body: {
+      contractId: string;
+      walletAddress: string;
+      maxPoolSize: number;
+    },
+    keypair: Keypair,
+  ) =>
+    signedPost<{ xdr: string; transactionId: number }>(
+      "/secondary-royalty/set-pool-limit",
+      body,
+      keypair,
+    ),
+
   distributeSecondaryRoyalties: (
     body: {
       contractId: string;
@@ -423,10 +437,6 @@ export const api = {
       numberOfSales: number;
       totalRoyalties: string;
     }>("/secondary-royalty/distribute", body, keypair),
-
-  getRoyaltyStats: (contractId: string) =>
-    get<RoyaltyStats>(`/secondary-royalty/stats/${contractId}`),
-
   getSecondarySales: (
     contractId: string,
     limit = 50,
