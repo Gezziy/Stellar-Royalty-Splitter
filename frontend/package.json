@@ -34,7 +34,8 @@
     "react-dom": "^18.3.0",
     "react-i18next": "^17.0.12",
     "react-toastify": "^11.1.0",
-    "recharts": "^2.15.4"
+    "recharts": "^2.15.4",
+    "zustand": "^5.0.15"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.10.0",

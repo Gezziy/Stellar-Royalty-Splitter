@@ -6,6 +6,9 @@ import {
   SettingsType,
   isValidContractId,
 } from "../context/SettingsContext";
+import { useUIStore } from "../store/uiStore";
+import { useSettingsStore } from "../store/settingsStore";
+import { useContractsStore } from "../store/contractsStore";
 
 import { CopyButton } from "./CopyButton";
 import { PaymentPreferences } from "./PaymentPreferences";
