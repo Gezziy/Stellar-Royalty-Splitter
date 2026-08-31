@@ -6,6 +6,7 @@ import { metricsRouter } from "../src/routes/metrics.js";
 import {
   recordDistributeCall,
   recordHorizonResponseTime,
+  recordHttpRequest,
   recordTransactionFailure,
   recordTransactionSuccess,
   resetMetrics,
@@ -23,6 +24,7 @@ describe("GET /metrics", () => {
     recordTransactionFailure();
     recordHorizonResponseTime(20);
     recordHorizonResponseTime(40);
+    recordHttpRequest("GET", "/health", 200, 25);
 
     const res = await request(app).get("/metrics");
 
@@ -32,5 +34,7 @@ describe("GET /metrics", () => {
     expect(res.text).toContain("stellar_transactions_successful_total 1");
     expect(res.text).toContain("stellar_transactions_failed_total 1");
     expect(res.text).toContain("stellar_horizon_response_time_average_ms 30");
+    expect(res.text).toContain('http_requests_total{method="GET",route="/health",status="200"} 1');
+    expect(res.text).toContain('http_request_duration_seconds_count{method="GET",route="/health",status="200"} 1');
   });
 });
