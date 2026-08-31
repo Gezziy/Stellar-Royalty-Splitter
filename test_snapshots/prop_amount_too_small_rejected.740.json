@@ -1,6 +1,6 @@
 {
   "generators": {
-    "address": 7,
+    "address": 5,
     "nonce": 0
   },
   "auth": [
@@ -39,28 +39,16 @@
                     },
                     {
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
-                    },
-                    {
-                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
-                    },
-                    {
-                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
                     }
                   ]
                 },
                 {
                   "vec": [
                     {
-                      "u32": 2500
+                      "u32": 5000
                     },
                     {
-                      "u32": 2500
-                    },
-                    {
-                      "u32": 2500
-                    },
-                    {
-                      "u32": 2500
+                      "u32": 5000
                     }
                   ]
                 }
@@ -86,7 +74,7 @@
                 {
                   "i128": {
                     "hi": 0,
-                    "lo": 3
+                    "lo": 1
                   }
                 }
               ]
@@ -205,12 +193,6 @@
                     },
                     {
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
-                    },
-                    {
-                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
-                    },
-                    {
-                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
                     }
                   ]
                 }
@@ -267,22 +249,6 @@
                       "val": {
                         "u64": 0
                       }
-                    },
-                    {
-                      "key": {
-                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
-                      },
-                      "val": {
-                        "u64": 0
-                      }
-                    },
-                    {
-                      "key": {
-                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
-                      },
-                      "val": {
-                        "u64": 0
-                      }
                     }
                   ]
                 }
@@ -329,7 +295,7 @@
                         "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
                       },
                       "val": {
-                        "u32": 2500
+                        "u32": 5000
                       }
                     },
                     {
@@ -337,23 +303,7 @@
                         "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
                       },
                       "val": {
-                        "u32": 2500
-                      }
-                    },
-                    {
-                      "key": {
-                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
-                      },
-                      "val": {
-                        "u32": 2500
-                      }
-                    },
-                    {
-                      "key": {
-                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
-                      },
-                      "val": {
-                        "u32": 2500
+                        "u32": 5000
                       }
                     }
                   ]
@@ -532,7 +482,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 3
+                          "lo": 1
                         }
                       }
                     },
@@ -844,28 +794,16 @@
                     },
                     {
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
-                    },
-                    {
-                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
-                    },
-                    {
-                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
                     }
                   ]
                 },
                 {
                   "vec": [
                     {
-                      "u32": 2500
+                      "u32": 5000
                     },
                     {
-                      "u32": 2500
-                    },
-                    {
-                      "u32": 2500
-                    },
-                    {
-                      "u32": 2500
+                      "u32": 5000
                     }
                   ]
                 }
@@ -920,28 +858,16 @@
                     },
                     {
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
-                    },
-                    {
-                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
-                    },
-                    {
-                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
                     }
                   ]
                 },
                 {
                   "vec": [
                     {
-                      "u32": 2500
+                      "u32": 5000
                     },
                     {
-                      "u32": 2500
-                    },
-                    {
-                      "u32": 2500
-                    },
-                    {
-                      "u32": 2500
+                      "u32": 5000
                     }
                   ]
                 }
@@ -999,7 +925,7 @@
                 {
                   "i128": {
                     "hi": 0,
-                    "lo": 3
+                    "lo": 1
                   }
                 }
               ]
@@ -1033,7 +959,7 @@
             "data": {
               "i128": {
                 "hi": 0,
-                "lo": 3
+                "lo": 1
               }
             }
           }
@@ -1152,7 +1078,7 @@
             "data": {
               "i128": {
                 "hi": 0,
-                "lo": 3
+                "lo": 1
               }
             }
           }

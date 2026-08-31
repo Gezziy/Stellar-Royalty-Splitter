@@ -54,6 +54,10 @@ pub mod msg {
     pub const RESOLVE_DISPUTE_ADMIN: &str =
         "resolve_dispute: admin authorization required";
     pub const CLAWBACK_ADMIN: &str = "clawback: admin authorization required";
+    pub const SET_EMERGENCY_PAUSE_SIGNERS_ADMIN: &str =
+        "set_emergency_pause_signers: admin authorization required";
+    pub const EMERGENCY_PAUSE_SIGNER: &str =
+        "emergency_pause: authorized emergency signer authorization required";
 }
 
 /// Requires admin authorization; panics with `message` if missing.

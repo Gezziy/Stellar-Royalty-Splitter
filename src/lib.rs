@@ -139,6 +139,8 @@ pub enum StorageKey {
     PendingAdminRotation,
     AdminRotationTimelock,
     EmergencyPaused,
+    EmergencyPauseSigners,
+    EmergencyPauseThreshold,
     AnomalyThreshold,
     ProposalCount,
     // Persistent storage
@@ -229,6 +231,9 @@ pub const MIN_PROPOSAL_DURATION: u64 = 3_600;
 /// Maximum governance proposal voting window, seconds (#842). 14 days.
 pub const MAX_PROPOSAL_DURATION: u64 = 1_209_600;
 
+/// Maximum number of authorized emergency pause signers (#838).
+pub const MAX_EMERGENCY_PAUSE_SIGNERS: u32 = 10;
+
 /// Total collaborator share weight — proposals need a strict majority of this.
 pub const TOTAL_SHARE_WEIGHT: u32 = 10_000;
 
@@ -290,6 +295,9 @@ pub enum ContractError {
     ProposalAlreadyExecuted = 45,
     AlreadyVoted = 46,
     InvalidProposalDuration = 47,
+    InvalidEmergencyPauseSigners = 48,
+    InvalidEmergencyPauseThreshold = 49,
+    UnauthorizedEmergencySigner = 50,
 }
 
 #[contract]
@@ -714,6 +722,7 @@ impl RoyaltySplitter {
 
         Self::check_admin_auth(&env, auth::msg::UNPAUSE_ADMIN);
         storage::instance_set(&env, &StorageKey::Paused, &false);
+        storage::instance_set(&env, &StorageKey::EmergencyPaused, &false);
         let admin = Self::require_admin_address(&env)?;
         env.events().publish(
             (symbol_short!("royalty"), symbol_short!("unpaused")),
@@ -2038,10 +2047,142 @@ impl RoyaltySplitter {
         true
     }
 
+    // ─────────────────────────────────────────────────────────────────────
+    // #838 — Multi-sig emergency pause mechanism
+    //
+    // Allows M-of-N authorized emergency pause signers to freeze the contract
+    // immediately during an incident without a slow timelock, eliminating
+    // single admin key compromise as a single point of failure.
+    // Unpausing / revoking emergency pause strictly requires full admin authorization.
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// Admin: Configure authorized emergency pause signers and threshold M-of-N.
+    pub fn set_emergency_pause_signers(
+        env: Env,
+        signers: Vec<Address>,
+        threshold: u32,
+    ) -> Result<(), ContractError> {
+        storage::extend_instance_ttl(&env);
+        Self::check_admin_auth(&env, auth::msg::SET_EMERGENCY_PAUSE_SIGNERS_ADMIN);
+
+        if signers.is_empty() {
+            return Err(ContractError::InvalidEmergencyPauseSigners);
+        }
+        if signers.len() > MAX_EMERGENCY_PAUSE_SIGNERS {
+            return Err(ContractError::InputTooLarge);
+        }
+        if threshold < 1 || threshold > signers.len() as u32 {
+            return Err(ContractError::InvalidEmergencyPauseThreshold);
+        }
+
+        let mut seen: Vec<Address> = Vec::new(&env);
+        for i in 0..signers.len() {
+            let addr = signers.get(i).unwrap();
+            for j in 0..seen.len() {
+                if seen.get(j).unwrap() == addr {
+                    return Err(ContractError::DuplicateRecipient);
+                }
+            }
+            seen.push_back(addr);
+        }
+
+        storage::instance_set(&env, &StorageKey::EmergencyPauseSigners, &signers);
+        storage::instance_set(&env, &StorageKey::EmergencyPauseThreshold, &threshold);
+
+        env.events().publish(
+            (symbol_short!("royalty"), symbol_short!("em_sign")),
+            (signers.len(), threshold),
+        );
+        Ok(())
+    }
+
+    /// Returns the authorized emergency pause signers, or an empty list if unconfigured.
+    pub fn get_emergency_pause_signers(env: Env) -> Vec<Address> {
+        storage::extend_instance_ttl(&env);
+        env.storage()
+            .instance()
+            .get(&StorageKey::EmergencyPauseSigners)
+            .unwrap_or(Vec::new(&env))
+    }
+
+    /// Returns the configured emergency pause threshold (defaults to 1).
+    pub fn get_emergency_pause_threshold(env: Env) -> u32 {
+        storage::extend_instance_ttl(&env);
+        env.storage()
+            .instance()
+            .get(&StorageKey::EmergencyPauseThreshold)
+            .unwrap_or(1)
+    }
+
+    /// Multi-sig emergency pause: Collects M authorizations from authorized signers
+    /// and immediately pauses contract distributions without timelock.
+    pub fn emergency_pause(env: Env, signers: Vec<Address>) -> Result<(), ContractError> {
+        storage::extend_instance_ttl(&env);
+
+        let authorized: Option<Vec<Address>> = env
+            .storage()
+            .instance()
+            .get(&StorageKey::EmergencyPauseSigners);
+
+        if let Some(auth_signers) = authorized {
+            let threshold: u32 = env
+                .storage()
+                .instance()
+                .get(&StorageKey::EmergencyPauseThreshold)
+                .unwrap_or(1);
+
+            if signers.len() < threshold {
+                return Err(ContractError::InvalidEmergencyPauseThreshold);
+            }
+
+            let mut seen: Vec<Address> = Vec::new(&env);
+            for i in 0..signers.len() {
+                let signer = signers.get(i).unwrap();
+                for j in 0..seen.len() {
+                    if seen.get(j).unwrap() == signer {
+                        return Err(ContractError::DuplicateRecipient);
+                    }
+                }
+                seen.push_back(signer.clone());
+
+                let mut is_authorized = false;
+                for k in 0..auth_signers.len() {
+                    if auth_signers.get(k).unwrap() == signer {
+                        is_authorized = true;
+                        break;
+                    }
+                }
+                if !is_authorized {
+                    return Err(ContractError::UnauthorizedEmergencySigner);
+                }
+            }
+
+            let context = String::from_str(&env, auth::msg::EMERGENCY_PAUSE_SIGNER);
+            env.events().publish((symbol_short!("auth_req"),), context);
+            for i in 0..signers.len() {
+                signers.get(i).unwrap().require_auth();
+            }
+        } else {
+            // Fallback: If no dedicated emergency signers configured, require admin auth
+            Self::check_admin_auth(&env, auth::msg::TRIGGER_EMERGENCY_PAUSE_ADMIN);
+        }
+
+        // Set emergency pause immediately (takes effect with 0 delay)
+        storage::instance_set(&env, &StorageKey::EmergencyPaused, &true);
+        storage::instance_set(&env, &StorageKey::Paused, &true);
+
+        env.events().publish(
+            (symbol_short!("royalty"), symbol_short!("em_pause")),
+            signers.len(),
+        );
+        Ok(())
+    }
+
     pub fn trigger_emergency_pause(env: Env, reason: String) {
         storage::extend_instance_ttl(&env);
         Self::check_admin_auth(&env, auth::msg::TRIGGER_EMERGENCY_PAUSE_ADMIN);
         storage::instance_set(&env, &StorageKey::EmergencyPaused, &true);
+        storage::instance_set(&env, &StorageKey::Paused, &true);
         env.events()
             .publish((symbol_short!("royalty"), symbol_short!("emrg_set")), reason);
     }
@@ -2050,6 +2191,7 @@ impl RoyaltySplitter {
         storage::extend_instance_ttl(&env);
         Self::require_emergency_clear_auth(&env);
         storage::instance_set(&env, &StorageKey::EmergencyPaused, &false);
+        storage::instance_set(&env, &StorageKey::Paused, &false);
         env.events()
             .publish((symbol_short!("royalty"), symbol_short!("emrg_clr")), ());
     }
@@ -3010,6 +3152,156 @@ mod emergency_pause_tests {
         client.trigger_emergency_pause(&String::from_str(&env, "test"));
 
         client.clear_emergency_pause();
+        assert!(!client.is_emergency_paused());
+    }
+
+    #[test]
+    fn set_and_get_emergency_pause_signers_and_threshold() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_, _, _, client) = setup(&env);
+
+        let s1 = Address::generate(&env);
+        let s2 = Address::generate(&env);
+        let s3 = Address::generate(&env);
+        let signers = Vec::from_array(&env, [s1.clone(), s2.clone(), s3.clone()]);
+
+        client.set_emergency_pause_signers(&signers, &2);
+        assert_eq!(client.get_emergency_pause_signers(), signers);
+        assert_eq!(client.get_emergency_pause_threshold(), 2);
+    }
+
+    #[test]
+    fn set_emergency_pause_signers_validations() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_, _, _, client) = setup(&env);
+
+        let s1 = Address::generate(&env);
+        let s2 = Address::generate(&env);
+
+        // Empty signers
+        assert_eq!(
+            client.try_set_emergency_pause_signers(&Vec::new(&env), &1),
+            Err(Ok(ContractError::InvalidEmergencyPauseSigners))
+        );
+
+        // Duplicate signers
+        assert_eq!(
+            client.try_set_emergency_pause_signers(
+                &Vec::from_array(&env, [s1.clone(), s1.clone()]),
+                &1
+            ),
+            Err(Ok(ContractError::DuplicateRecipient))
+        );
+
+        // Threshold 0
+        assert_eq!(
+            client.try_set_emergency_pause_signers(
+                &Vec::from_array(&env, [s1.clone(), s2.clone()]),
+                &0
+            ),
+            Err(Ok(ContractError::InvalidEmergencyPauseThreshold))
+        );
+
+        // Threshold > signers count
+        assert_eq!(
+            client.try_set_emergency_pause_signers(
+                &Vec::from_array(&env, [s1, s2]),
+                &3
+            ),
+            Err(Ok(ContractError::InvalidEmergencyPauseThreshold))
+        );
+    }
+
+    #[test]
+    fn multisig_emergency_pause_m_of_n_succeeds() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _a, _b, client) = setup(&env);
+
+        let s1 = Address::generate(&env);
+        let s2 = Address::generate(&env);
+        let s3 = Address::generate(&env);
+        let signers = Vec::from_array(&env, [s1.clone(), s2.clone(), s3.clone()]);
+
+        // M=2, N=3
+        client.set_emergency_pause_signers(&signers, &2);
+        assert!(!client.is_emergency_paused());
+
+        // 2-of-3 emergency pause (s1 and s3)
+        let active_signers = Vec::from_array(&env, [s1, s3]);
+        client.emergency_pause(&active_signers);
+
+        assert!(client.is_emergency_paused());
+
+        // Distribution is blocked
+        let asset_admin = Address::generate(&env);
+        let token = env.register_stellar_asset_contract(asset_admin);
+        StellarAssetClient::new(&env, &token).mint(&contract_id, &1_000);
+
+        assert_eq!(
+            client.try_distribute(&token),
+            Err(Ok(ContractError::EmergencyContractPaused))
+        );
+
+        // Admin revokes emergency pause via unpause()
+        client.unpause();
+        assert!(!client.is_emergency_paused());
+
+        // Distribution now succeeds
+        client.distribute(&token);
+        assert_eq!(client.get_distribute_count(), 1);
+    }
+
+    #[test]
+    fn multisig_emergency_pause_insufficient_signers_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_, _, _, client) = setup(&env);
+
+        let s1 = Address::generate(&env);
+        let s2 = Address::generate(&env);
+        let s3 = Address::generate(&env);
+        client.set_emergency_pause_signers(
+            &Vec::from_array(&env, [s1.clone(), s2, s3]),
+            &2,
+        );
+
+        // Providing 1 signer when threshold is 2
+        assert_eq!(
+            client.try_emergency_pause(&Vec::from_array(&env, [s1])),
+            Err(Ok(ContractError::InvalidEmergencyPauseThreshold))
+        );
+        assert!(!client.is_emergency_paused());
+    }
+
+    #[test]
+    fn multisig_emergency_pause_unauthorized_and_duplicate_signers_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_, _, _, client) = setup(&env);
+
+        let s1 = Address::generate(&env);
+        let s2 = Address::generate(&env);
+        let s3 = Address::generate(&env);
+        let rogue = Address::generate(&env);
+        client.set_emergency_pause_signers(
+            &Vec::from_array(&env, [s1.clone(), s2, s3]),
+            &2,
+        );
+
+        // Rogue non-signer account
+        assert_eq!(
+            client.try_emergency_pause(&Vec::from_array(&env, [s1.clone(), rogue])),
+            Err(Ok(ContractError::UnauthorizedEmergencySigner))
+        );
+
+        // Duplicate signer attempting to satisfy threshold
+        assert_eq!(
+            client.try_emergency_pause(&Vec::from_array(&env, [s1.clone(), s1])),
+            Err(Ok(ContractError::DuplicateRecipient))
+        );
         assert!(!client.is_emergency_paused());
     }
 }

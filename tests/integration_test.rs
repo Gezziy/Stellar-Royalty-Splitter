@@ -6174,3 +6174,143 @@ fn test_pause_operation_requires_admin_auth() {
     env.mock_auths(&[]);
     client.pause_operation(&OperationType::PrimaryDistribution);
 }
+
+// =============================================================================
+// Issue #838 — Emergency pause mechanism with multi-sig requirement (M-of-N)
+// =============================================================================
+
+/// M-of-N scenario (M=2, N=3): 2 of 3 authorized emergency pause signers successfully
+/// trigger immediate emergency pause, blocking distributions without timelock,
+/// and admin successfully revokes the pause via unpause().
+#[test]
+fn test_emergency_pause_multisig_2_of_3_scenario() {
+    let env = Env::default();
+    env.mock_all_auths_allowing_non_root_auth();
+    let (contract_id, client) = setup(&env);
+
+    let admin = Address::generate(&env);
+    let b = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = make_token(&env, &token_admin);
+
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
+
+    let s1 = Address::generate(&env);
+    let s2 = Address::generate(&env);
+    let s3 = Address::generate(&env);
+    let signers = vec![&env, s1.clone(), s2.clone(), s3.clone()];
+
+    // Configure M=2 of N=3
+    client.set_emergency_pause_signers(&signers, &2);
+    assert_eq!(client.get_emergency_pause_signers(), signers);
+    assert_eq!(client.get_emergency_pause_threshold(), 2);
+    assert!(!client.is_emergency_paused());
+
+    // Emergency incident: 2 authorized signers (s2 and s3) trigger pause immediately
+    let active_signers = vec![&env, s2.clone(), s3.clone()];
+    client.emergency_pause(&active_signers);
+
+    // Immediately paused (no timelock)
+    assert!(client.is_emergency_paused());
+
+    // Distributions are blocked
+    mint(&env, &token, &contract_id, 1_000);
+    let res = client.try_distribute(&token);
+    assert_eq!(res, Err(Ok(ContractError::EmergencyContractPaused.into())));
+
+    // Admin revokes emergency pause via unpause()
+    client.unpause();
+    assert!(!client.is_emergency_paused());
+
+    // Distributions now execute cleanly
+    client.distribute(&token);
+    assert_eq!(client.get_distribute_count(), 1);
+}
+
+/// Revoking multi-sig emergency pause via clear_emergency_pause().
+#[test]
+fn test_emergency_pause_multisig_clear_by_admin() {
+    let env = Env::default();
+    env.mock_all_auths_allowing_non_root_auth();
+    let (contract_id, client) = setup(&env);
+
+    let admin = Address::generate(&env);
+    let b = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = make_token(&env, &token_admin);
+
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
+
+    let s1 = Address::generate(&env);
+    let s2 = Address::generate(&env);
+    let s3 = Address::generate(&env);
+
+    client.set_emergency_pause_signers(&vec![&env, s1.clone(), s2.clone(), s3.clone()], &2);
+
+    // Pause with s1 and s2
+    client.emergency_pause(&vec![&env, s1.clone(), s2.clone()]);
+    assert!(client.is_emergency_paused());
+
+    // Clear via clear_emergency_pause()
+    client.clear_emergency_pause();
+    assert!(!client.is_emergency_paused());
+
+    mint(&env, &token, &contract_id, 2_000);
+    client.distribute(&token);
+    assert_eq!(client.get_distribute_count(), 1);
+}
+
+/// Rejection of invalid signers, duplicate signers, and sub-threshold attempts.
+#[test]
+fn test_emergency_pause_multisig_threshold_and_signer_validations() {
+    let env = Env::default();
+    env.mock_all_auths_allowing_non_root_auth();
+    let (_contract_id, client) = setup(&env);
+
+    let admin = Address::generate(&env);
+    let b = Address::generate(&env);
+
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
+
+    let s1 = Address::generate(&env);
+    let s2 = Address::generate(&env);
+    let s3 = Address::generate(&env);
+    let rogue = Address::generate(&env);
+
+    // M=2 of N=3
+    client.set_emergency_pause_signers(&vec![&env, s1.clone(), s2.clone(), s3.clone()], &2);
+
+    // 1 signer provided when threshold is 2 -> rejected
+    let res_insufficient = client.try_emergency_pause(&vec![&env, s1.clone()]);
+    assert_eq!(
+        res_insufficient,
+        Err(Ok(ContractError::InvalidEmergencyPauseThreshold.into()))
+    );
+
+    // Rogue non-signer provided -> rejected
+    let res_unauthorized = client.try_emergency_pause(&vec![&env, s1.clone(), rogue]);
+    assert_eq!(
+        res_unauthorized,
+        Err(Ok(ContractError::UnauthorizedEmergencySigner.into()))
+    );
+
+    // Duplicate signer provided -> rejected
+    let res_duplicate = client.try_emergency_pause(&vec![&env, s1.clone(), s1.clone()]);
+    assert_eq!(
+        res_duplicate,
+        Err(Ok(ContractError::DuplicateRecipient.into()))
+    );
+
+    // Contract remains unpaused
+    assert!(!client.is_emergency_paused());
+}
+
