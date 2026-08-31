@@ -1650,6 +1650,7 @@ dependencies = [
  "criterion",
  "proptest",
  "soroban-sdk",
+ "stellar-royalty-splitter",
 ]
 
 [[package]]

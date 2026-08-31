@@ -207,7 +207,9 @@ pub enum StorageKey {
     // Instance storage
     Admin,
     SecondaryPool,
+    SecondaryRoyaltyPool,
     SecondaryToken,
+    MaxSecondaryPoolSize,
     ContractVersion,
     RoyaltyRate,
     LastDistribution,
@@ -562,9 +564,9 @@ impl RoyaltySplitter {
             (symbol_short!("royalty"), symbol_short!("init")),
             (collaborators, shares),
         );
-        storage::instance_set(&env, &StorageKey::SecondaryRoyaltyPool, &0_i128);
+        storage::instance_set(env, &StorageKey::SecondaryRoyaltyPool, &0_i128);
         storage::instance_set(
-            &env,
+            env,
             &StorageKey::MaxSecondaryPoolSize,
             &MAX_SECONDARY_POOL_SIZE,
         );
@@ -1553,7 +1555,7 @@ impl RoyaltySplitter {
             .get(&StorageKey::MaxSecondaryPoolSize)
             .unwrap_or(MAX_SECONDARY_POOL_SIZE);
         if new_pool > max_pool {
-            return Err(ContractError::SecondaryPoolLimitExceeded);
+            return Err(ContractError::InputTooLarge);
         }
 
         storage::instance_set(&env, &StorageKey::SecondaryPool, &new_pool);
@@ -1843,7 +1845,7 @@ impl RoyaltySplitter {
         Self::check_admin_auth(&env, "set_max_secondary_pool_size");
         let current_pool = Self::get_secondary_pool(env.clone());
         if new_limit < current_pool {
-            return Err(ContractError::SecondaryPoolLimitExceeded);
+            return Err(ContractError::InputTooLarge);
         }
 
         storage::instance_set(&env, &StorageKey::MaxSecondaryPoolSize, &new_limit);
@@ -3410,7 +3412,10 @@ impl RoyaltySplitter {
 }
 
 fn warning_threshold(max_pool: i128) -> i128 {
-    (max_pool / 100) * 80 + ((max_pool % 100) * 80 / 100)
+    max_pool
+        .checked_mul(80)
+        .and_then(|value| value.checked_div(100))
+        .expect("secondary pool warning threshold overflow")
 }
 
 #[cfg(test)]

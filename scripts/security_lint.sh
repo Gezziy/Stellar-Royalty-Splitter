@@ -23,7 +23,16 @@ CRITICAL_FUNCTIONS=("set_royalty_rate" "pause" "unpause" "update_wasm" "admin_tr
 
 for FUNC in "${CRITICAL_FUNCTIONS[@]}"; do
     # Find the function body (simplified) and check for auth
-    if ! awk "/pub fn $FUNC/,/}/{print}" src/lib.rs | grep -q -E "require_auth|check_admin_auth|require_admin"; then
+    if ! awk -v fn_name="$FUNC" '
+        BEGIN { pattern = "pub fn " fn_name "(" }
+        index($0, pattern) { in_fn=1 }
+        in_fn {
+          print
+          opens += gsub(/\{/, "{")
+          closes += gsub(/\}/, "}")
+          if (opens > 0 && opens == closes) exit
+        }
+      ' src/lib.rs | grep -q -E "require_auth|check_admin_auth|require_admin"; then
         echo "❌ ERROR: Critical function '$FUNC' might be missing an authorization check."
         EXIT_CODE=1
     fi
