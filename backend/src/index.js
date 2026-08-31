@@ -28,11 +28,14 @@ import { healthRouter } from "./routes/health.js";
 import { livenessRouter } from "./routes/liveness.js";
 import onboardingRouter from "./routes/onboarding.js";
 import { closeDatabase, initializeDatabase } from "./database/index.js";
+import { startHealthMonitor, stopHealthMonitor } from "./database/health-monitor.js";
 import { createGracefulShutdownHandler, shutdownMiddleware } from "./shutdown.js";
 import { adminRouter } from "./routes/admin.js";
 import { snapshotRouter } from "./routes/snapshots.js";
 import { communicationsRouter } from "./routes/communications.js";
 import { metricsRouter } from "./routes/metrics.js";
+import { applicationLogsRouter } from "./routes/application-logs.js";
+import { evaluateLogAlerts, pruneApplicationLogs } from "./database/application-logs.js";
 import { initializeSigningKey } from "./signing-key.js";
 import { sendError, notFoundHandler, errorHandler } from "./error-response.js";
 import { preferencesRouter } from "./routes/preferences.js";
@@ -62,10 +65,22 @@ import { transactionFinalityRouter } from "./routes/transaction-finality.js";
 import { startFinalityCleanupScheduler } from "./jobs/finality-cleanup-job.js";
 import { startPaymentScheduleJob } from "./jobs/payment-schedule-job.js";
 import { setupGraphQL } from "./graphql.js";
+import { requestComplexityMiddleware } from "./request-complexity.js";
 
 // Initialize database on startup
 initializeDatabase();
 initializeSigningKey();
+
+// Keep the searchable log store bounded without requiring a separate worker.
+// `unref` means this maintenance timer cannot keep tests or graceful shutdowns alive.
+const logRetentionInterval = setInterval(() => {
+  pruneApplicationLogs(process.env.LOG_RETENTION_DAYS);
+}, 6 * 60 * 60 * 1000);
+logRetentionInterval.unref?.();
+pruneApplicationLogs(process.env.LOG_RETENTION_DAYS);
+
+// Start database connection health monitor (#496)
+startHealthMonitor();
 
 const app = express();
 
@@ -79,12 +94,21 @@ app.use((req, res, next) => {
     const start = Date.now();
     res.on("finish", () => {
       const duration = Date.now() - start;
-      logger.info(`${req.method} ${req.originalUrl} ${res.statusCode} ${duration}ms`, {
+      const metadata = {
         method: req.method,
         path: req.originalUrl,
         status: res.statusCode,
         duration,
-      });
+      };
+      const log = res.statusCode >= 500 ? logger.error : res.statusCode >= 400 ? logger.warn : logger.info;
+      log.call(logger, "request completed", metadata);
+      if (res.statusCode >= 500) {
+        const alert = evaluateLogAlerts({
+          windowMinutes: process.env.LOG_ALERT_WINDOW_MINUTES,
+          errorThreshold: process.env.LOG_ALERT_ERROR_THRESHOLD,
+        });
+        if (alert.triggered) logger.error("Centralized log error-rate alert triggered", alert);
+      }
     });
     next();
   });
@@ -256,6 +280,10 @@ app.use((req, res, next) => {
   next();
 });
 
+// Enforce request complexity limits before expensive downstream processing (#892)
+app.use(requestComplexityMiddleware());
+
+
 // Per-request timeout middleware
 const REQUEST_TIMEOUT_MS = parseInt(process.env.REQUEST_TIMEOUT_MS ?? "30000");
 app.use((req, res, next) => {
@@ -313,6 +341,7 @@ app.use("/api/v1/referrals", writeLimiter);
 app.use("/api/v1/referrals", referralsRouter);
 app.use("/metrics", metricsRouter);
 app.use("/api/v1/metrics", metricsRouter);
+app.use("/api/v1/observability", applicationLogsRouter);
 
 // Contributor performance rankings (#586)
 app.use("/api/v1/ranking", rankingRouter);

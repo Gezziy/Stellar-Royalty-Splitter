@@ -3,7 +3,7 @@ import { api } from "../api";
 import { getContractAddressError, isValidContractAddress } from "../lib/stellar-address";
 import { signAndSubmitTransaction } from "../stellar";
 import { useNetwork } from "../context/NetworkContext";
-import { useTransaction, useIsTransactionInFlight } from "../context/TransactionContext";
+import { useTransactionStore } from "../store/transactionsStore";
 import FormStatus from "./FormStatus";
 import TransactionStatusBadge from "./TransactionStatusBadge";
 import { useFormStatus } from "../hooks/useFormStatus";
@@ -68,11 +68,10 @@ export default function DistributeForm({
   walletAddress,
   onSuccess,
 }: Props) {
-  const { network } = useNetwork();
+  const { network, networkMismatch } = useNetwork();
   const { current: txEntry, beginTransaction, updatePhase, reset: resetTx } = useTransaction();
   const isInFlight = useIsTransactionInFlight();
 
-  const { network, networkMismatch } = useNetwork();
   const [tokenId, setTokenId] = useState("");
   const [amount, setAmount] = useState("");
   const [contractBalance, setContractBalance] = useState<string | null>(null);
@@ -84,8 +83,6 @@ export default function DistributeForm({
   const { status, setStatus, clearStatus } = useFormStatus();
 
   // Use TransactionContext's in-flight flag as the primary loading gate (#391)
-  const loading = isInFlight;
-
   const [loading, setLoading] = useState(false);
   const [successTxHash, setSuccessTxHash] = useState<string | null>(null);
   const [touched, setTouched] = useState<{ tokenId?: boolean; amount?: boolean }>({});
@@ -254,16 +251,20 @@ export default function DistributeForm({
 
       // #391: Phase 2 — signing
       updatePhase("signing", { transactionId: res.transactionId });
+      txLifecycle.setStage("submitting");
 
-      const hash = await signAndSubmitTransaction(res.xdr, network);
+      // Single stable "Retrying submission…" state in the UI while the
+      // submission layer transparently retries transient RPC/network
+      // failures (100ms / 500ms / 2s backoff, max 3 retries). Permanent
+      // failures surface immediately as errors.
+      const hash = await signAndSubmitTransaction(res.xdr, network, {
+        onRetry: () => updatePhase("confirming", { label: "Retrying submission…" }),
+      });
 
       // #391: Phase 3 — confirming, with countdown
       updatePhase("confirming", { txHash: hash });
-
-      txLifecycle.setStage("submitting");
-      const hash = await signAndSubmitTransaction(res.xdr, network);
-
       txLifecycle.setStage("confirming");
+
       await api.confirmTransaction(hash, {
         status: "confirmed",
         blockTime: new Date().toISOString(),
@@ -482,11 +483,10 @@ export default function DistributeForm({
         <button
           type="submit"
           className="btn-primary btn-with-spinner"
-          disabled={loading || exceedsBalance || !amount}
-          aria-busy={loading}
           data-testid="distribute-submit"
           disabled={loading || txLifecycle.isActive || exceedsBalance || !amount || !tokenIdValid || networkMismatch}
           aria-busy={loading || txLifecycle.isActive}
+          data-testid="distribute-submit"
         >
           {(loading || txLifecycle.isActive) && <span className="btn-spinner" aria-hidden="true" />}
           {loading || txLifecycle.isActive ? "Submitting…" : "Distribute funds"}
@@ -495,9 +495,9 @@ export default function DistributeForm({
           type="button"
           className="btn-secondary"
           onClick={clearForm}
-          disabled={loading || (!tokenId && !amount && !draftPrompt)}
           data-testid="distribute-clear"
           disabled={loading || txLifecycle.isActive || (!tokenId && !amount && !draftPrompt)}
+          data-testid="distribute-clear"
         >
           Clear
         </button>

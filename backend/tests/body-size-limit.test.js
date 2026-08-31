@@ -449,14 +449,14 @@ describe("Prometheus metrics include DoS counters", () => {
 
   test("prometheusMetrics output includes oversized_requests counter", async () => {
     const { prometheusMetrics } = await import("../src/metrics.js");
-    const output = prometheusMetrics();
+    const output = await prometheusMetrics();
     expect(output).toContain("stellar_oversized_requests_rejected_total");
     expect(output).toContain("# TYPE stellar_oversized_requests_rejected_total counter");
   });
 
   test("prometheusMetrics output includes dos_rate_limited counter", async () => {
     const { prometheusMetrics } = await import("../src/metrics.js");
-    const output = prometheusMetrics();
+    const output = await prometheusMetrics();
     expect(output).toContain("stellar_dos_rate_limited_total");
     expect(output).toContain("# TYPE stellar_dos_rate_limited_total counter");
   });

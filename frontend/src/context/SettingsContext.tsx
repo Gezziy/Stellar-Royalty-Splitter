@@ -1,17 +1,16 @@
 import React, { createContext, useContext, useState, useEffect } from "react";
+import i18n from "../i18n";
 
-export interface SettingsType {
-  autoSaveAuditLog: boolean;
-  notifyOnDistribution: boolean;
-  displayCurrency: "XLM" | "USD" | "EUR";
-  maxPayoutsPerTransaction: number;
-  minPayoutAmount: number;
+export { isValidContractId, normalizeContractList };
+
+export interface SettingsType extends BaseSettingsType {
   trackedContracts: string[];
+  language: "en" | "es" | "de" | "zh";
 }
 
 interface SettingsContextType {
   settings: SettingsType;
-  updateSettings: (patch: Partial<SettingsType>) => void;
+  updateSettings: (patch: Partial<BaseSettingsType>) => void;
   addTrackedContract: (contractId: string) => boolean;
   removeTrackedContract: (contractId: string) => void;
 }
@@ -23,6 +22,7 @@ const DEFAULTS: SettingsType = {
   maxPayoutsPerTransaction: 10,
   minPayoutAmount: 0.1,
   trackedContracts: [],
+  language: "en",
 };
 
 // A contract ID on Stellar starts with "C" and is 56 characters long.
@@ -56,26 +56,20 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({
     } catch (_) {}
   }, [settings]);
 
+  useEffect(() => {
+    // Sync i18n language with settings language preference
+    if (settings.language && i18n.language !== settings.language) {
+      i18n.changeLanguage(settings.language);
+    }
+  }, [settings.language]);
+
   const updateSettings = (patch: Partial<SettingsType>) =>
     setSettings((s) => ({ ...s, ...patch }));
 
-  const addTrackedContract = (contractId: string): boolean => {
-    const trimmed = contractId.trim();
-    if (!isValidContractId(trimmed)) return false;
-    if (settings.trackedContracts.includes(trimmed)) return false;
-    setSettings((s) =>
-      s.trackedContracts.includes(trimmed)
-        ? s
-        : { ...s, trackedContracts: [...s.trackedContracts, trimmed] },
-    );
-    return true;
+  const settings: SettingsType = {
+    ...baseSettings,
+    trackedContracts,
   };
-
-  const removeTrackedContract = (contractId: string) =>
-    setSettings((s) => ({
-      ...s,
-      trackedContracts: s.trackedContracts.filter((c) => c !== contractId),
-    }));
 
   return (
     <SettingsContext.Provider
@@ -86,10 +80,23 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({
   );
 };
 
-export const useSettings = () => {
-  const ctx = useContext(SettingsContext);
-  if (!ctx) throw new Error("useSettings must be used within SettingsProvider");
-  return ctx;
+export const useSettings = (): SettingsContextType => {
+  const context = useContext(SettingsContext);
+  const baseSettings = useSettingsStore((s) => s.settings);
+  const updateSettings = useSettingsStore((s) => s.updateSettings);
+  const trackedContracts = useContractsStore((s) => s.trackedContracts);
+  const addTrackedContract = useContractsStore((s) => s.addTrackedContract);
+  const removeTrackedContract = useContractsStore((s) => s.removeTrackedContract);
+
+  if (context) {
+    return context;
+  }
+  return {
+    settings: { ...baseSettings, trackedContracts },
+    updateSettings,
+    addTrackedContract,
+    removeTrackedContract,
+  };
 };
 
 export default SettingsProvider;

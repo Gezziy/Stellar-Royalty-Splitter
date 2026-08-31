@@ -332,6 +332,26 @@ export function initializeDatabase() {
           CREATE INDEX IF NOT EXISTS idx_webhook_dlq_created_at ON webhook_dlq(created_at);
         `,
       },
+      {
+        // #874: centralized structured log aggregation and retention
+        version: 14,
+        sql: `
+          CREATE TABLE IF NOT EXISTS application_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            level TEXT NOT NULL,
+            message TEXT NOT NULL,
+            correlation_id TEXT,
+            request_id TEXT,
+            service TEXT NOT NULL DEFAULT 'api',
+            metadata TEXT NOT NULL DEFAULT '{}'
+          );
+          CREATE INDEX IF NOT EXISTS idx_application_logs_timestamp ON application_logs(timestamp);
+          CREATE INDEX IF NOT EXISTS idx_application_logs_level_timestamp ON application_logs(level, timestamp);
+          CREATE INDEX IF NOT EXISTS idx_application_logs_correlation_id ON application_logs(correlation_id);
+          CREATE INDEX IF NOT EXISTS idx_application_logs_request_id ON application_logs(request_id);
+        `,
+      },
   ];
 
   for (const migration of migrations) {
@@ -368,6 +388,30 @@ export function checkDatabase() {
     if (!db.open) {
       return { connected: false, responseTimeMs: Date.now() - start, error: "Database is closed" };
     }
+
+    // Verify the connection is alive with a simple query
+    db.prepare("SELECT 1").get();
+
+    const responseTimeMs = Date.now() - start;
+    const version = db.prepare("SELECT MAX(version) as v FROM schema_migrations").get()?.v ?? 0;
+    const walMode = db.pragma("journal_mode", { simple: true }) === "wal";
+    const tableCount = db.prepare("SELECT COUNT(*) as c FROM sqlite_master WHERE type='table'").get()?.c ?? 0;
+
+    return {
+      connected: true,
+      responseTimeMs,
+      version,
+      walMode,
+      tableCount,
+    };
+  } catch (err) {
+    return {
+      connected: false,
+      responseTimeMs: Date.now() - start,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
 
 /**
  * Delete health_history records older than 90 days.
@@ -452,26 +496,3 @@ export function getSLAStats(days = 30) {
 }
 
 export default db;
-    // Verify the connection is alive with a simple query
-    db.prepare("SELECT 1").get();
-
-    const responseTimeMs = Date.now() - start;
-    const version = db.prepare("SELECT MAX(version) as v FROM schema_migrations").get()?.v ?? 0;
-    const walMode = db.pragma("journal_mode", { simple: true }) === "wal";
-    const tableCount = db.prepare("SELECT COUNT(*) as c FROM sqlite_master WHERE type='table'").get()?.c ?? 0;
-
-    return {
-      connected: true,
-      responseTimeMs,
-      version,
-      walMode,
-      tableCount,
-    };
-  } catch (err) {
-    return {
-      connected: false,
-      responseTimeMs: Date.now() - start,
-      error: err instanceof Error ? err.message : String(err),
-    };
-  }
-}
