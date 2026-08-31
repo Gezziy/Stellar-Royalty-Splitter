@@ -533,7 +533,10 @@ impl RoyaltySplitter {
 
         let mut payouts = Vec::new(env);
         let mut total_calculated: i128 = 0;
-        let last_index = recipients.len() - 1;
+        let last_index = recipients
+            .len()
+            .checked_sub(1)
+            .ok_or(ContractError::AmountTooSmall)?;
         for index in 0..recipients.len() {
             let recipient = recipients.get(index).unwrap_optimized();
             let payout = if index == last_index {
@@ -942,7 +945,10 @@ impl RoyaltySplitter {
         let quote = quote.ok_or(ContractError::NoBalance)?;
 
         let now = env.ledger().timestamp();
-        if quote.timestamp > now || now - quote.timestamp > config.max_staleness {
+        let quote_age = now
+            .checked_sub(quote.timestamp)
+            .ok_or(ContractError::NoBalance)?;
+        if quote_age > config.max_staleness {
             return Err(ContractError::NoBalance);
         }
         if quote.price <= 0 || decimals > 18 {
@@ -975,7 +981,8 @@ impl RoyaltySplitter {
             .ok_or(ContractError::NotInitialized)?;
 
         let now = env.ledger().timestamp();
-        if config.last_updated != 0 && now - config.last_updated < config.update_frequency {
+        let elapsed_since_update = now.saturating_sub(config.last_updated);
+        if config.last_updated != 0 && elapsed_since_update < config.update_frequency {
             return Err(ContractError::NoBalance);
         }
 
@@ -1389,7 +1396,7 @@ impl RoyaltySplitter {
 
         env.events().publish(
             (symbol_short!("royalty"), symbol_short!("dist_strt")),
-            (token.clone(), amount, n as u32),
+            (token.clone(), amount, n),
         );
 
         let mut failed: Vec<Address> = Vec::new(&env);
@@ -1399,7 +1406,7 @@ impl RoyaltySplitter {
         for (addr, payout) in payouts.iter() {
             match token_client.try_transfer(&env.current_contract_address(), &addr, &payout) {
                 Ok(Ok(())) => {
-                    succeeded += 1;
+                    succeeded = succeeded.saturating_add(1);
                     distributed = distributed
                         .checked_add(payout)
                         .ok_or(ContractError::ArithmeticOverflow)?;
@@ -1659,7 +1666,16 @@ impl RoyaltySplitter {
 
     fn pool_warning_threshold(max_pool: i128) -> i128 {
         // 80% of the cap, computed without risking overflow on very large caps.
-        (max_pool / 100) * 80 + ((max_pool % 100) * 80 / 100)
+        let whole = max_pool
+            .checked_div(100)
+            .and_then(|value| value.checked_mul(80))
+            .unwrap_or(i128::MAX);
+        let fractional = max_pool
+            .checked_rem(100)
+            .and_then(|value| value.checked_mul(80))
+            .and_then(|value| value.checked_div(100))
+            .unwrap_or(0);
+        whole.saturating_add(fractional)
     }
 
     pub fn get_max_secondary_pool_size(env: Env) -> i128 {
@@ -1747,7 +1763,8 @@ impl RoyaltySplitter {
         let mut payouts: Vec<(Address, i128)> = Vec::new(&env);
         let mut total_calculated: i128 = 0;
 
-        for i in 0..(n - 1) {
+        let last_index = n.checked_sub(1).ok_or(ContractError::NoCollaborators)?;
+        for i in 0..last_index {
             let addr = collaborators.get(i).unwrap_optimized();
             let share = share_map.get(addr.clone()).unwrap_or(0);
             let payout = Self::checked_bps_amount(&env, pool, share)?;
@@ -1757,7 +1774,7 @@ impl RoyaltySplitter {
                 .ok_or(ContractError::ArithmeticOverflow)?;
         }
 
-        let last = collaborators.get(n - 1).unwrap();
+        let last = collaborators.get(last_index).unwrap();
         payouts.push_back((
             last,
             pool.checked_sub(total_calculated)
@@ -1986,7 +2003,7 @@ impl RoyaltySplitter {
         if threshold < 1 {
             panic!("threshold must be at least 1");
         }
-        if threshold > admins.len() as u32 {
+        if threshold > admins.len() {
             panic!("threshold > admin count");
         }
 
@@ -2114,19 +2131,33 @@ impl RoyaltySplitter {
             let scaled = if total_bonus == effective_total {
                 raw
             } else {
-                ((raw as u64) * (effective_total as u64) / (total_bonus as u64)) as u32
+                let numerator = (raw as u64)
+                    .checked_mul(effective_total as u64)
+                    .expect("scaled incentive numerator overflow");
+                numerator
+                    .checked_div(total_bonus as u64)
+                    .expect("validated nonzero total bonus") as u32
             };
             scaled_bonuses.push_back(scaled);
             scaled_sum = scaled_sum.saturating_add(scaled);
         }
 
-        let pool_bps = 10_000u32 - scaled_sum;
+        let pool_bps = 10_000u32
+            .checked_sub(scaled_sum)
+            .expect("scaled incentives cannot exceed 10000 bps");
 
         let mut adjusted: Vec<Recipient> = Vec::new(&env);
         let mut assigned_total: u32 = 0;
-        for i in 0..(n - 1) {
+        let last_index = n
+            .checked_sub(1)
+            .expect("validated non-empty incentive recipients");
+        for i in 0..last_index {
             let r = base.get(i).unwrap();
-            let shrunk_base = ((r.share as u64) * (pool_bps as u64) / 10_000) as u32;
+            let shrunk_base = (r.share as u64)
+                .checked_mul(pool_bps as u64)
+                .and_then(|value| value.checked_div(10_000))
+                .expect("basis point shrink calculation overflow")
+                as u32;
             let new_share = shrunk_base.saturating_add(scaled_bonuses.get(i).unwrap());
             assigned_total = assigned_total.saturating_add(new_share);
             adjusted.push_back(Recipient {
@@ -2135,7 +2166,7 @@ impl RoyaltySplitter {
             });
         }
 
-        let last = base.get(n - 1).unwrap();
+        let last = base.get(last_index).unwrap();
         let last_share = 10_000u32
             .checked_sub(assigned_total)
             .expect("arithmetic overflow in incentive adjustment");
@@ -2311,7 +2342,7 @@ impl RoyaltySplitter {
 
         Self::check_admin_auth(&env, auth::msg::SET_ADMIN_ROTATION_TIMELOCK_ADMIN);
 
-        if seconds < MIN_ADMIN_ROTATION_TIMELOCK || seconds > MAX_ADMIN_ROTATION_TIMELOCK {
+        if !(MIN_ADMIN_ROTATION_TIMELOCK..=MAX_ADMIN_ROTATION_TIMELOCK).contains(&seconds) {
             panic!("invalid timelock duration");
         }
 
@@ -2407,7 +2438,7 @@ impl RoyaltySplitter {
         if signers.len() > MAX_EMERGENCY_PAUSE_SIGNERS {
             return Err(ContractError::InputTooLarge);
         }
-        if threshold < 1 || threshold > signers.len() as u32 {
+        if threshold < 1 || threshold > signers.len() {
             return Err(ContractError::InvalidEmergencyPauseThreshold);
         }
 
@@ -2743,8 +2774,10 @@ impl RoyaltySplitter {
         let mut disputes: Map<u64, Dispute> =
             storage::persistent_get::<Map<u64, Dispute>>(&env, &StorageKey::Disputes)
                 .unwrap_or(Map::new(&env));
-        let next_id: u64 =
-            storage::persistent_get::<u64>(&env, &StorageKey::DisputeCount).unwrap_or(0) + 1;
+        let next_id: u64 = storage::persistent_get::<u64>(&env, &StorageKey::DisputeCount)
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or(ContractError::ArithmeticOverflow)?;
 
         let dispute = Dispute {
             transaction_id,
@@ -2876,13 +2909,15 @@ impl RoyaltySplitter {
         if new_rate > 10_000 {
             return Err(ContractError::RoyaltyRateTooHigh);
         }
-        if duration < MIN_PROPOSAL_DURATION || duration > MAX_PROPOSAL_DURATION {
+        if !(MIN_PROPOSAL_DURATION..=MAX_PROPOSAL_DURATION).contains(&duration) {
             return Err(ContractError::InvalidProposalDuration);
         }
 
         let now = env.ledger().timestamp();
-        let id: u64 =
-            storage::instance_get::<u64>(&env, &StorageKey::ProposalCount).unwrap_or(0) + 1;
+        let id: u64 = storage::instance_get::<u64>(&env, &StorageKey::ProposalCount)
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or(ContractError::ArithmeticOverflow)?;
 
         let proposal = Proposal {
             id,
@@ -3363,7 +3398,7 @@ impl RoyaltySplitter {
             return Err(ContractError::UnauthorizedEmergencySigner);
         }
 
-        if duration < MIN_PROPOSAL_DURATION || duration > MAX_PROPOSAL_DURATION {
+        if !(MIN_PROPOSAL_DURATION..=MAX_PROPOSAL_DURATION).contains(&duration) {
             return Err(ContractError::InvalidProposalDuration);
         }
 
@@ -3400,7 +3435,8 @@ impl RoyaltySplitter {
         let now = env.ledger().timestamp();
         let id: u64 = storage::instance_get::<u64>(&env, &StorageKey::OperationProposalCount)
             .unwrap_or(0)
-            + 1;
+            .checked_add(1)
+            .ok_or(ContractError::ArithmeticOverflow)?;
         let threshold = Self::get_current_threshold(&env);
 
         let mut proposal = OperationProposal {
