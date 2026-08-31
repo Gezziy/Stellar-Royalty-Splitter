@@ -1,7 +1,7 @@
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { vi, type Mock } from "vitest";
 import "@testing-library/jest-dom";
-import { EarningsDashboard } from "./EarningsDashboard";
+import { EarningsDashboard, distributionAmount } from "./EarningsDashboard";
 
 // Mock the API module
 vi.mock("../api", () => ({
@@ -24,6 +24,17 @@ vi.mock("../context/SettingsContext", () => ({
 }));
 
 import { useSettings } from "../context/SettingsContext";
+import { useAnalytics } from "../hooks/queries/useAnalytics";
+import { useCollaborators } from "../hooks/queries/useCollaborators";
+import { useRoyaltyStats } from "../hooks/queries/useRoyaltyStats";
+import { useTransactionHistory } from "../hooks/queries/useTransactionHistory";
+import { useSecondarySales } from "../hooks/queries/useSecondarySales";
+
+vi.mock("../hooks/queries/useAnalytics");
+vi.mock("../hooks/queries/useCollaborators");
+vi.mock("../hooks/queries/useRoyaltyStats");
+vi.mock("../hooks/queries/useTransactionHistory");
+vi.mock("../hooks/queries/useSecondarySales");
 
 vi.mock("../utils/dashboardExport", async () => {
   const actual = await vi.importActual<typeof import("../utils/dashboardExport")>(
@@ -57,6 +68,11 @@ const mockGetCollaborators = api.getCollaborators as Mock;
 const mockGetRoyaltyStats = api.getRoyaltyStats as Mock;
 const mockGetTransactionHistory = api.getTransactionHistory as Mock;
 const mockGetSecondarySales = api.getSecondarySales as Mock;
+const mockUseAnalytics = useAnalytics as Mock;
+const mockUseCollaborators = useCollaborators as Mock;
+const mockUseRoyaltyStats = useRoyaltyStats as Mock;
+const mockUseTransactionHistory = useTransactionHistory as Mock;
+const mockUseSecondarySales = useSecondarySales as Mock;
 
 const MOCK_CONTRACT = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const MOCK_WALLET = "GAPTAQKSMN2ILFVHXDE5V274BUPC6QCRMJZYJFNGW7ENT2X3BQOS4M3C";
@@ -106,10 +122,76 @@ const mockSecondarySales = {
   ],
 };
 
+function queryResult(data: unknown, overrides: Record<string, unknown> = {}) {
+  return {
+    data,
+    isLoading: false,
+    isError: false,
+    error: null,
+    isFetching: false,
+    refetch: vi.fn(),
+    ...overrides,
+  };
+}
+
+function mockDashboardHooks({
+  analytics = mockAnalyticsData,
+  collaborators = mockCollaborators,
+  royaltyStats = { totalRoyaltiesGenerated: "300" },
+  transactions = mockTransactionHistory,
+  secondarySales = mockSecondarySales,
+  overrides = {},
+}: {
+  analytics?: unknown;
+  collaborators?: unknown;
+  royaltyStats?: unknown;
+  transactions?: unknown;
+  secondarySales?: unknown;
+  overrides?: Record<string, Record<string, unknown>>;
+} = {}) {
+  mockUseAnalytics.mockReturnValue(queryResult(analytics, overrides.analytics));
+  mockUseCollaborators.mockReturnValue(queryResult(collaborators, overrides.collaborators));
+  mockUseRoyaltyStats.mockReturnValue(queryResult(royaltyStats, overrides.royaltyStats));
+  mockUseTransactionHistory.mockReturnValue(queryResult(transactions, overrides.transactions));
+  mockUseSecondarySales.mockReturnValue(queryResult(secondarySales, overrides.secondarySales));
+}
+
+describe("live distribution updates (#890)", () => {
+  it("extracts the amount from supported distribution event payloads", () => {
+    expect(distributionAmount({
+      type: "distribution_completed",
+      contractId: MOCK_CONTRACT,
+      transactionId: 1,
+      timestamp: "2026-08-29T12:00:00Z",
+      requestedAmount: "125.5",
+    })).toBe(125.5);
+    expect(distributionAmount({
+      type: "secondary_distribution_completed",
+      contractId: MOCK_CONTRACT,
+      transactionId: 2,
+      timestamp: "2026-08-29T12:00:00Z",
+      totalRoyalties: "42",
+    })).toBe(42);
+  });
+
+  it("ignores malformed or non-positive amounts", () => {
+    const event = {
+      type: "distribution_completed" as const,
+      contractId: MOCK_CONTRACT,
+      transactionId: 3,
+      timestamp: "2026-08-29T12:00:00Z",
+      requestedAmount: "not-a-number",
+    };
+    expect(distributionAmount(event)).toBeNull();
+    expect(distributionAmount({ ...event, requestedAmount: "0" })).toBeNull();
+  });
+});
+
 describe("EarningsDashboard Component", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     setTrackedContracts([]);
+    mockDashboardHooks();
   });
 
   it("renders empty state when contractId is not provided", () => {
@@ -119,23 +201,26 @@ describe("EarningsDashboard Component", () => {
   });
 
   it("renders loading skeleton initially when contractId is provided", () => {
-    mockGetAnalytics.mockReturnValue(new Promise(() => {}));
-    mockGetCollaborators.mockReturnValue(new Promise(() => {}));
-    mockGetRoyaltyStats.mockReturnValue(new Promise(() => {}));
-    mockGetTransactionHistory.mockReturnValue(new Promise(() => {}));
-    mockGetSecondarySales.mockReturnValue(new Promise(() => {}));
+    mockDashboardHooks({
+      analytics: undefined,
+      collaborators: undefined,
+      royaltyStats: undefined,
+      transactions: undefined,
+      secondarySales: undefined,
+      overrides: {
+        analytics: { isLoading: true },
+        collaborators: { isLoading: true },
+        royaltyStats: { isLoading: true },
+        transactions: { isLoading: true },
+        secondarySales: { isLoading: true },
+      },
+    });
 
     render(<EarningsDashboard contractId={MOCK_CONTRACT} />);
     expect(screen.getByTestId("earnings-dashboard-loading")).toBeInTheDocument();
   });
 
   it("renders dashboard with KPIs, collaborators, and payouts after data loads", async () => {
-    mockGetAnalytics.mockResolvedValue(mockAnalyticsData);
-    mockGetCollaborators.mockResolvedValue(mockCollaborators);
-    mockGetRoyaltyStats.mockResolvedValue({ totalRoyaltiesGenerated: "300" });
-    mockGetTransactionHistory.mockResolvedValue(mockTransactionHistory);
-    mockGetSecondarySales.mockResolvedValue(mockSecondarySales);
-
     render(<EarningsDashboard contractId={MOCK_CONTRACT} walletAddress={MOCK_WALLET} />);
 
     await waitFor(() => {
@@ -153,14 +238,17 @@ describe("EarningsDashboard Component", () => {
     expect(screen.getByText("You")).toBeInTheDocument(); // Badge for connected wallet
     expect(screen.getByText("60.00%")).toBeInTheDocument();
     expect(screen.getByText("40.00%")).toBeInTheDocument();
+
+    // Verify Advanced Analytics Dashboard is rendered
+    expect(screen.getByTestId("advanced-analytics-dashboard")).toBeInTheDocument();
   });
 
   it("filters collaborators by search query", async () => {
-    mockGetAnalytics.mockResolvedValue(mockAnalyticsData);
-    mockGetCollaborators.mockResolvedValue(mockCollaborators);
-    mockGetRoyaltyStats.mockResolvedValue({});
-    mockGetTransactionHistory.mockResolvedValue({ data: [] });
-    mockGetSecondarySales.mockResolvedValue({ sales: [] });
+    mockDashboardHooks({
+      royaltyStats: {},
+      transactions: { data: [] },
+      secondarySales: { sales: [] },
+    });
 
     render(<EarningsDashboard contractId={MOCK_CONTRACT} walletAddress={MOCK_WALLET} />);
 
@@ -176,11 +264,7 @@ describe("EarningsDashboard Component", () => {
   });
 
   it("filters recent payouts using tab buttons", async () => {
-    mockGetAnalytics.mockResolvedValue(mockAnalyticsData);
-    mockGetCollaborators.mockResolvedValue(mockCollaborators);
-    mockGetRoyaltyStats.mockResolvedValue({});
-    mockGetTransactionHistory.mockResolvedValue(mockTransactionHistory);
-    mockGetSecondarySales.mockResolvedValue(mockSecondarySales);
+    mockDashboardHooks({ royaltyStats: {} });
 
     render(<EarningsDashboard contractId={MOCK_CONTRACT} walletAddress={MOCK_WALLET} />);
 
@@ -196,8 +280,14 @@ describe("EarningsDashboard Component", () => {
   });
 
   it("renders error state when API fails", async () => {
-    mockGetAnalytics.mockRejectedValue(new Error("Network Error"));
-    mockGetCollaborators.mockRejectedValue(new Error("Network Error"));
+    mockDashboardHooks({
+      analytics: undefined,
+      collaborators: undefined,
+      overrides: {
+        analytics: { isError: true, error: new Error("Network Error") },
+        collaborators: { isError: true, error: new Error("Network Error") },
+      },
+    });
 
     render(<EarningsDashboard contractId={MOCK_CONTRACT} />);
 
@@ -210,11 +300,7 @@ describe("EarningsDashboard Component", () => {
 
   describe("dashboard export (#770)", () => {
     beforeEach(() => {
-      mockGetAnalytics.mockResolvedValue(mockAnalyticsData);
-      mockGetCollaborators.mockResolvedValue(mockCollaborators);
-      mockGetRoyaltyStats.mockResolvedValue({ totalRoyaltiesGenerated: "300" });
-      mockGetTransactionHistory.mockResolvedValue(mockTransactionHistory);
-      mockGetSecondarySales.mockResolvedValue(mockSecondarySales);
+      mockDashboardHooks();
     });
 
     async function renderLoaded() {
@@ -303,10 +389,21 @@ describe("EarningsDashboard Component", () => {
           },
         }),
       );
-      mockGetCollaborators.mockResolvedValue(mockCollaborators);
-      mockGetRoyaltyStats.mockResolvedValue({});
-      mockGetTransactionHistory.mockResolvedValue({ data: [] });
-      mockGetSecondarySales.mockResolvedValue({ sales: [] });
+      mockUseAnalytics.mockImplementation((id: string) =>
+        queryResult({
+          success: true,
+          data: {
+            totalDistributed: contractTotals[id] ?? 0,
+            primaryRoyaltiesTotal: contractTotals[id] ?? 0,
+            secondaryRoyaltiesTotal: 0,
+            collaboratorStats: [],
+          },
+        }),
+      );
+      mockUseCollaborators.mockReturnValue(queryResult(mockCollaborators));
+      mockUseRoyaltyStats.mockReturnValue(queryResult({}));
+      mockUseTransactionHistory.mockReturnValue(queryResult({ data: [] }));
+      mockUseSecondarySales.mockReturnValue(queryResult({ sales: [] }));
     }
 
     it("renders the contract selector with tracked contracts", async () => {
@@ -318,7 +415,7 @@ describe("EarningsDashboard Component", () => {
       const selector = await screen.findByTestId("contract-selector");
       expect(selector).toBeInTheDocument();
 
-      const options = screen.getAllByRole("option");
+      const options = within(screen.getByTestId("contract-selector")).getAllByRole("option");
       // Two contracts + "All Contracts" aggregate option
       expect(options).toHaveLength(3);
       expect(
@@ -344,7 +441,7 @@ describe("EarningsDashboard Component", () => {
       });
 
       await waitFor(() => {
-        expect(mockGetAnalytics).toHaveBeenCalledWith(CONTRACT_B);
+        expect(mockUseAnalytics).toHaveBeenCalledWith(CONTRACT_B);
       });
       await waitFor(() => {
         expect(screen.getAllByText("500 XLM").length).toBeGreaterThan(0);

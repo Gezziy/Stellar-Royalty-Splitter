@@ -2,8 +2,9 @@
  * HealthDashboard — system health overview with component status,
  * SLA tracking, and historical trends (#787).
  */
-import { useState, useEffect, useCallback } from "react";
+import { useState, useCallback } from "react";
 import { api, HealthResponse, HealthHistoryEntry, SLAStats, HealthComponent } from "../api";
+import { useHealth, useHealthHistory, useHealthSla } from "../hooks/queries/useHealth";
 
 const STATUS_COLORS: Record<string, { bg: string; text: string; dot: string }> = {
   healthy:        { bg: "var(--color-success-bg, #d1fae5)",  text: "var(--color-success, #065f46)",  dot: "#10b981" },
@@ -253,42 +254,34 @@ function HistoryTable({ entries }: { entries: HealthHistoryEntry[] }) {
 }
 
 export function HealthDashboard() {
-  const [health, setHealth] = useState<HealthResponse | null>(null);
-  const [history, setHistory] = useState<HealthHistoryEntry[]>([]);
-  const [sla, setSla] = useState<SLAStats | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
 
-  const fetchAll = useCallback(async () => {
-    try {
-      setError(null);
-      const [healthRes, historyRes, slaRes] = await Promise.all([
-        api.getHealth(),
-        api.getHealthHistory(24),
-        api.getHealthSla(30),
-      ]);
-      setHealth(healthRes);
-      setHistory(historyRes.data);
-      setSla(slaRes.data);
-      setLastRefresh(new Date());
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load health data");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  // React Query hooks — each has refetchInterval: 30_000 built in (#832).
+  // This replaces the manual fetchAll + setInterval(fetchAll, 30_000) pattern.
+  const healthQuery = useHealth();
+  const historyQuery = useHealthHistory(24);
+  const slaQuery = useHealthSla(30);
 
-  // Initial fetch
-  useEffect(() => {
-    fetchAll();
-  }, [fetchAll]);
+  const health = healthQuery.data ?? null;
+  const history: HealthHistoryEntry[] = historyQuery.data?.data ?? [];
+  const sla: SLAStats | null = slaQuery.data?.data ?? null;
+  const loading = healthQuery.isLoading || historyQuery.isLoading || slaQuery.isLoading;
+  const error =
+    (healthQuery.isError ? (healthQuery.error as Error)?.message : null) ??
+    (historyQuery.isError ? (historyQuery.error as Error)?.message : null) ??
+    null;
 
-  // Auto-refresh every 30 seconds
-  useEffect(() => {
-    const id = setInterval(fetchAll, 30_000);
-    return () => clearInterval(id);
-  }, [fetchAll]);
+  // Track when any of the queries last successfully updated
+  const lastFetchTime =
+    healthQuery.dataUpdatedAt > 0 ? new Date(healthQuery.dataUpdatedAt) : null;
+
+  // Manual refresh: invalidate all health queries so they refetch immediately
+  const handleRefresh = useCallback(() => {
+    void healthQuery.refetch();
+    void historyQuery.refetch();
+    void slaQuery.refetch();
+    setLastRefresh(new Date());
+  }, [healthQuery, historyQuery, slaQuery]);
 
   if (loading) {
     return (
@@ -331,12 +324,12 @@ export function HealthDashboard() {
           🏥 System Health
         </h2>
         <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-          {lastRefresh && (
+          {(lastRefresh ?? lastFetchTime) && (
             <span style={{ fontSize: "0.8rem", color: "var(--color-text-muted, #6b7280)" }}>
-              Updated {lastRefresh.toLocaleTimeString()}
+              Updated {(lastRefresh ?? lastFetchTime)!.toLocaleTimeString()}
             </span>
           )}
-          <button onClick={fetchAll} className="btn btn-secondary" style={{ fontSize: "0.82rem", padding: "4px 12px" }}>
+          <button onClick={handleRefresh} className="btn btn-secondary" style={{ fontSize: "0.82rem", padding: "4px 12px" }}>
             ↻ Refresh
           </button>
         </div>

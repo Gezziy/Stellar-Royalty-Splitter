@@ -45,6 +45,7 @@
  */
 
 import logger from "./logger.js";
+import { recordRpcRetry } from "./metrics.js";
 
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_BASE_BACKOFF_MS = 1000;
@@ -274,10 +275,20 @@ export async function withRetry(operation, options = {}) {
   const {
     operationType = "unknown",
     maxRetries = retryConfig.maxRetries,
-    _baseBackoffMs = retryConfig.baseBackoffMs,
+    baseBackoffMs = retryConfig.baseBackoffMs,
     shouldRetry = null, // Custom retry predicate (overrides isTransientError if provided)
     details = {},
   } = options;
+
+  // Per-call backoff base (falls back to the global config). Previously this
+  // option was destructured as `_baseBackoffMs` and silently ignored.
+  const effectiveBackoff = Number.isFinite(baseBackoffMs) && baseBackoffMs > 0
+    ? baseBackoffMs
+    : retryConfig.baseBackoffMs;
+  const backoffConfig = {
+    baseBackoffMs: effectiveBackoff,
+    maxBackoffMs: retryConfig.maxBackoffMs,
+  };
 
   // Prevent accidental retries of transaction submission
   if (operationType === "submitTransaction" || operationType === "submit") {
@@ -301,6 +312,9 @@ export async function withRetry(operation, options = {}) {
           attemptNumber: attempt,
           details,
         });
+        // Metrics: this operation recovered after at least one retry.
+        retryMetrics.recordSuccess();
+        recordRpcRetry(operationType, "success");
       }
 
       return result;
@@ -323,12 +337,15 @@ export async function withRetry(operation, options = {}) {
             lastError: error,
             details,
           });
+          // Metrics: all retry attempts were consumed without recovery.
+          retryMetrics.recordExhausted();
+          recordRpcRetry(operationType, "exhausted");
         }
         throw error;
       }
 
       // Calculate backoff and retry
-      const delayMs = getBackoffDelay(attempt);
+      const delayMs = getBackoffDelay(attempt, backoffConfig);
 
       logRetryAttempt({
         attemptNumber: attempt,
@@ -338,6 +355,10 @@ export async function withRetry(operation, options = {}) {
         delayMs,
         details,
       });
+
+      // Metrics: one retry attempt is about to be executed.
+      retryMetrics.recordAttempt();
+      recordRpcRetry(operationType, "attempt");
 
       // Wait before retry
       await new Promise((resolve) => setTimeout(resolve, delayMs));

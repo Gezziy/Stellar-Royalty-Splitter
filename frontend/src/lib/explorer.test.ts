@@ -71,7 +71,7 @@ describe("explorer helpers (#299, #686)", () => {
 
   test("custom head and tail lengths are respected", () => {
     const hash = "abcdef0123456789abcdef";
-    expect(formatTxHash(hash, 4, 4)).toBe("abcd…6789");
+    expect(formatTxHash(hash, 4, 4)).toBe("abcd…cdef");
   });
 
   // -----------------------------------------------------------------------

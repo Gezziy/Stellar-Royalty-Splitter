@@ -61,6 +61,8 @@ if (
 import { vi } from "vitest";
 import enTranslations from "../i18n/locales/en.json";
 
+(globalThis as typeof globalThis & { jest: typeof vi }).jest = vi;
+
 vi.mock("react-i18next", () => {
   const translate = (key: string, options?: any) => {
     const parts = key.split(".");
@@ -105,4 +107,43 @@ vi.mock("../context/NotificationContext", () => ({
     deleteNotification: vi.fn(),
   }),
   NotificationProvider: ({ children }: any) => children,
+}));
+
+vi.mock("../hooks/queries/useHealth", () => ({
+  useHealth: vi.fn(() => ({
+    data: undefined,
+    isLoading: false,
+    isError: false,
+    error: null,
+    isFetching: false,
+    dataUpdatedAt: 0,
+    refetch: vi.fn(),
+  })),
+  useHealthHistory: vi.fn(() => ({
+    data: undefined,
+    isLoading: false,
+    isError: false,
+    error: null,
+    isFetching: false,
+    refetch: vi.fn(),
+  })),
+  useHealthSla: vi.fn(() => ({
+    data: undefined,
+    isLoading: false,
+    isError: false,
+    error: null,
+    isFetching: false,
+    refetch: vi.fn(),
+  })),
+}));
+
+vi.mock("../hooks/queries/useContractPerformance", () => ({
+  useContractPerformance: vi.fn(() => ({
+    data: undefined,
+    isLoading: false,
+    isError: false,
+    error: null,
+    isFetching: false,
+    refetch: vi.fn(),
+  })),
 }));

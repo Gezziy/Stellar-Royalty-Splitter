@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef, useCallback, useMemo } from "react";
 
 import { api } from "../api";
+import { queryClient } from "../lib/queryClient";
 import { TableSkeleton } from "./Skeleton";
 import CollaboratorAllocationChart from "./CollaboratorAllocationChart";
 import {
@@ -138,49 +139,57 @@ export default function CollaboratorTable({ contractId, refreshKey }: Props) {
   // ── tier data ──────────────────────────────────────────────────────────
   const [tierData, setTierData] = useState<Map<string, string> | null>(null);
 
-  /* ── Fetch collaborators & analytics ─────────────────────────────────── */
   useEffect(() => {
     if (!contractId) return;
-    setLoading(true);
-    setError("");
+    let cancelled = false;
 
-    const basePromise = api.getCollaborators(contractId);
-    // Best-effort analytics fetch for payment status
-    const analyticsPromise = api
-      .getAnalytics(contractId)
-      .then((res) => {
-        if (res.success && res.data.collaboratorStats) {
+    async function loadCollaborators() {
+      setLoading(true);
+      setError("");
+      try {
+        const [nextCollaborators, analyticsRes, tiersRes] = await Promise.all([
+          api.getCollaborators(contractId),
+          api.getAnalytics(contractId).catch(() => null),
+          api.getContractTiers(contractId).catch(() => ({ data: [] })),
+        ]);
+
+        if (cancelled) return;
+
+        queryClient.setQueryData(["collaborators", contractId], nextCollaborators);
+        if (analyticsRes) {
+          queryClient.setQueryData(["analytics", contractId], analyticsRes);
+        }
+        setCollaborators(nextCollaborators);
+        setNames(loadNames(contractId));
+
+        if (analyticsRes?.success && analyticsRes.data.collaboratorStats) {
           const map = new Map<string, number>();
-          for (const stat of res.data.collaboratorStats) {
+          for (const stat of analyticsRes.data.collaboratorStats) {
             map.set(stat.address, stat.payoutCount);
           }
-          return map;
+          setPaymentData(map);
+        } else {
+          setPaymentData(null);
         }
-        return null;
-      })
-      .catch(() => null);
 
-    // Best-effort tiers fetch
-    const tiersPromise = api
-      .getContractTiers(contractId)
-      .then((res) => {
-        const map = new Map<string, string>();
-        for (const t of res.data ?? []) {
-          map.set(t.walletAddress, t.tier);
+        const tierMap = new Map<string, string>();
+        for (const tier of tiersRes.data ?? []) {
+          tierMap.set(tier.walletAddress, tier.tier);
         }
-        return map;
-      })
-      .catch(() => null);
+        setTierData(tierMap);
+      } catch (err) {
+        if (cancelled) return;
+        setError(err instanceof Error ? err.message : "Failed to load collaborators");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
 
-    Promise.all([basePromise, analyticsPromise, tiersPromise])
-      .then(([collabData, payData, tierData]) => {
-        setCollaborators(collabData);
-        setNames(loadNames(contractId));
-        setPaymentData(payData);
-        setTierData(tierData);
-      })
-      .catch((e: Error) => setError(e.message))
-      .finally(() => setLoading(false));
+    void loadCollaborators();
+
+    return () => {
+      cancelled = true;
+    };
   }, [contractId, refreshKey, retryCount]);
 
   /* ── Debounced search ────────────────────────────────────────────────── */

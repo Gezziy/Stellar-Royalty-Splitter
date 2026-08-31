@@ -87,7 +87,7 @@
   transform: translateY(-2px);
 }
 
-.sidebar-card h3 {
+.sidebar-card h2 {
   margin: 0 0 var(--spacing-sm) 0;
   color: var(--text-primary);
   font-size: 1rem;

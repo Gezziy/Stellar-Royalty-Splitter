@@ -10,6 +10,7 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { vi, type Mock } from "vitest";
 import "@testing-library/jest-dom";
 import CollaboratorTable from "./CollaboratorTable";
+import { queryClient } from "../lib/queryClient";
 
 // Mock the API module
 vi.mock("../api", () => ({
@@ -63,6 +64,7 @@ function setup(mockData = mockCollaborators) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  queryClient.clear();
   localStorage.clear();
   mockGetAnalytics.mockResolvedValue({
     success: true,

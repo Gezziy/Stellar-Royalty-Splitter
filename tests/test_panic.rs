@@ -1,4 +1,4 @@
-use soroban_sdk::{Env, Address, testutils::Address as _};
+use soroban_sdk::{testutils::Address as _, Address, Env};
 #[test]
 fn test_panic() {
     let env = Env::default();

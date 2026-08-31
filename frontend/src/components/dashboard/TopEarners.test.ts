@@ -45,7 +45,7 @@ describe("TopEarners #833", () => {
   test("address truncation keeps first 10 and last 6 characters", () => {
     const addr = earners[0].address;
     const truncated = `${addr.slice(0, 10)}...${addr.slice(-6)}`;
-    expect(truncated).toBe("GBBD47IF6L...LA5");
+    expect(truncated).toBe("GBBD47IF6L...LLFLA5");
     expect(truncated.length).toBeLessThan(addr.length);
   });
 

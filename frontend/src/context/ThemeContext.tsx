@@ -1,4 +1,5 @@
-import React, { createContext, useContext, useState, useEffect } from "react";
+import React, { createContext, useContext, useEffect } from "react";
+import { useUIStore } from "../store/uiStore";
 
 interface ThemeContextType {
   isDark: boolean;
@@ -7,56 +8,41 @@ interface ThemeContextType {
 
 const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
 
-const THEME_STORAGE_KEY = "theme";
-
-function getSystemPrefersDark(): boolean {
-  return (
-    typeof window !== "undefined" &&
-    typeof window.matchMedia === "function" &&
-    window.matchMedia("(prefers-color-scheme: dark)").matches
-  );
-}
-
-export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({
-  children,
-}) => {
-  const [isDark, setIsDark] = useState(() => {
-    const saved = localStorage.getItem(THEME_STORAGE_KEY);
-    if (saved) return saved === "dark";
-    return getSystemPrefersDark();
-  });
+export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const isDark = useUIStore((s) => s.isDark);
+  const toggleTheme = useUIStore((s) => s.toggleTheme);
+  const setIsDark = useUIStore((s) => s.setIsDark);
 
   useEffect(() => {
-    document.documentElement.setAttribute(
-      "data-theme",
-      isDark ? "dark" : "light",
-    );
+    if (typeof window === "undefined") {
+      return;
+    }
+    const saved = localStorage.getItem("theme");
+    if (saved) {
+      setIsDark(saved === "dark");
+      return;
+    }
+    if (typeof window.matchMedia === "function") {
+      setIsDark(window.matchMedia("(prefers-color-scheme: dark)").matches);
+    }
+  }, [setIsDark]);
+
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", isDark ? "dark" : "light");
   }, [isDark]);
 
-  // #769: track the OS theme live so a contributor who never manually toggled
-  // sees the app follow their system setting (e.g. switching at sunset)
-  // without needing a reload. A manual toggle (below) writes an explicit
-  // preference to localStorage, which takes over from the OS setting.
   useEffect(() => {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
       return;
     }
     const media = window.matchMedia("(prefers-color-scheme: dark)");
     const handleChange = (event: MediaQueryListEvent) => {
-      if (localStorage.getItem(THEME_STORAGE_KEY)) return; // explicit override wins
+      if (localStorage.getItem("theme")) return;
       setIsDark(event.matches);
     };
     media.addEventListener("change", handleChange);
     return () => media.removeEventListener("change", handleChange);
-  }, []);
-
-  const toggleTheme = () => {
-    setIsDark((prev) => {
-      const next = !prev;
-      localStorage.setItem(THEME_STORAGE_KEY, next ? "dark" : "light");
-      return next;
-    });
-  };
+  }, [setIsDark]);
 
   return (
     <ThemeContext.Provider value={{ isDark, toggleTheme }}>
@@ -65,7 +51,7 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({
   );
 };
 
-export const useTheme = () => {
+export const useTheme = (): ThemeContextType => {
   const context = useContext(ThemeContext);
   if (!context) {
     throw new Error("useTheme must be used within ThemeProvider");

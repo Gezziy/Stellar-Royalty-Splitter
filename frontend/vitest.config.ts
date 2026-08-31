@@ -1,8 +1,34 @@
 import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
   plugins: [react()],
+  resolve: {
+    alias: [
+      {
+        find: /^@testing-library\/react$/,
+        replacement: path.resolve(__dirname, "src/test/test-utils.tsx"),
+      },
+      {
+        find: /^@jest\/globals$/,
+        replacement: path.resolve(__dirname, "src/test/jest-globals.ts"),
+      },
+      {
+      // Keep in sync with vite.config.ts: shared/stellar-address.js (repo
+      // root) imports @stellar/stellar-sdk, which Node cannot resolve from
+      // outside the frontend package root.
+        find: "@stellar/stellar-sdk",
+        replacement: path.resolve(
+          __dirname,
+          "node_modules/@stellar/stellar-sdk",
+        ),
+      },
+    ],
+  },
   test: {
     environment: "jsdom",
     globals: true,

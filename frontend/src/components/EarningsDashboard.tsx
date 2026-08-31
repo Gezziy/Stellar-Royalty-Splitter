@@ -1,12 +1,14 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import { api, type TransactionRecord, type SecondarySale } from "../api";
+import React, { useState, useMemo, useRef } from "react";
+import { type SecondarySale } from "../api";
 import { useSettings } from "../context/SettingsContext";
+import { queryClient } from "../lib/queryClient";
 import { formatCurrency, formatNumber } from "../utils/format";
 import { isCollaborator } from "../utils/collaborators";
 import { CopyButton } from "./CopyButton";
 import { Skeleton } from "./Skeleton";
 import MultiContractComparison from "./MultiContractComparison";
 import { LiveEarningsCounter } from "./LiveEarningsCounter";
+import ContributorPerformanceComparison from "./ContributorPerformanceComparison";
 import { useWebSocket, type DistributionEvent } from "../hooks/useWebSocket";
 import {
   buildExportFilename,
@@ -16,16 +18,37 @@ import {
   downloadDashboardJSON,
   exportElementToPDF,
 } from "../utils/dashboardExport";
+import { useAnalytics } from "../hooks/queries/useAnalytics";
+import { useCollaborators } from "../hooks/queries/useCollaborators";
+import { useRoyaltyStats } from "../hooks/queries/useRoyaltyStats";
+import { useTransactionHistory } from "../hooks/queries/useTransactionHistory";
+import { useSecondarySales } from "../hooks/queries/useSecondarySales";
+import { AdvancedAnalyticsDashboard } from "./AdvancedAnalyticsDashboard";
 import "./EarningsDashboard.css";
+import type { TransactionRecord } from "../api";
 
-
-
-interface CollaboratorEarning {
+export interface CollaboratorEarning {
   address: string;
   basisPoints: number;
   totalEarned: number;
   payoutCount: number;
   avgPayout: number;
+  firstActivity: string | null;
+  lastActivity: string | null;
+}
+
+interface LiveDistribution {
+  amount: number;
+  type: DistributionEvent["type"];
+  transactionId: string | number;
+  timestamp: string;
+}
+
+export function distributionAmount(event: DistributionEvent): number | null {
+  const raw = event.royaltyAmount ?? event.totalRoyalties ?? event.requestedAmount;
+  if (raw === undefined || raw === null) return null;
+  const amount = Number(raw);
+  return Number.isFinite(amount) && amount > 0 ? amount : null;
 }
 
 interface RecentPayout {
@@ -70,7 +93,7 @@ export const EarningsDashboard: React.FC<EarningsDashboardProps> = ({
 
   // Follow the active contract chosen elsewhere in the app unless the user
   // is already viewing the aggregated view.
-  useEffect(() => {
+  React.useEffect(() => {
     if (contractId) {
       setSelectedContract((current) =>
         current === ALL_CONTRACTS ? current : contractId,
@@ -82,13 +105,7 @@ export const EarningsDashboard: React.FC<EarningsDashboardProps> = ({
     selectedContract === ALL_CONTRACTS ? "" : selectedContract;
   const showComparison = selectedContract === ALL_CONTRACTS;
 
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [totalDistributed, setTotalDistributed] = useState<number>(0);
-  const [primaryTotal, setPrimaryTotal] = useState<number>(0);
-  const [secondaryTotal, setSecondaryTotal] = useState<number>(0);
-  const [collaborators, setCollaborators] = useState<CollaboratorEarning[]>([]);
-  const [recentPayouts, setRecentPayouts] = useState<RecentPayout[]>([]);
+  const [latestDistribution, setLatestDistribution] = useState<LiveDistribution | null>(null);
   const [activeTab, setActiveTab] = useState<"all" | "primary" | "secondary">("all");
   const [searchQuery, setSearchQuery] = useState("");
 
@@ -98,143 +115,52 @@ export const EarningsDashboard: React.FC<EarningsDashboardProps> = ({
   const [exporting, setExporting] = useState<"pdf" | "csv" | "json" | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
 
-  const loadDashboardData = useCallback(async () => {
-    if (!activeContract) {
-      setLoading(false);
-      return;
-    }
+  // React Query hooks — data is deduplicated, cached, and shared across components (#832)
+  const analyticsQuery = useAnalytics(activeContract || undefined);
+  const collaboratorsQuery = useCollaborators(activeContract || undefined);
+  const royaltyStatsQuery = useRoyaltyStats(activeContract || undefined);
+  const txHistoryQuery = useTransactionHistory(activeContract || undefined, 20, 0);
+  const secondarySalesQuery = useSecondarySales(activeContract || undefined, 20, 0);
 
-    setLoading(true);
-    setError(null);
+  const loading =
+    analyticsQuery.isLoading ||
+    collaboratorsQuery.isLoading ||
+    royaltyStatsQuery.isLoading ||
+    txHistoryQuery.isLoading ||
+    secondarySalesQuery.isLoading;
 
-    try {
-      // Fetch analytics, collaborator shares, royalty stats, and transaction history in parallel
-      const [analyticsRes, collabRes, statsRes, historyRes, salesRes] = await Promise.allSettled([
-        api.getAnalytics(activeContract),
-        api.getCollaborators(activeContract),
-        api.getRoyaltyStats(activeContract),
-        api.getTransactionHistory(activeContract, 20, 0),
-        api.getSecondarySales(activeContract, 20, 0),
-      ]);
+  const error =
+    (analyticsQuery.isError && collaboratorsQuery.isError)
+      ? "Failed to load earnings dashboard data. Please try again."
+      : null;
 
-      if (analyticsRes.status === "rejected" && collabRes.status === "rejected") {
-        setError("Failed to load earnings dashboard data. Please try again.");
-        return;
-      }
-
-      // Parse Analytics data
-      let totalDist = 0;
-      let primTotal = 0;
-      let secTotal = 0;
-      let collabStatsMap = new Map<string, { totalEarned: number; payoutCount: number }>();
-
-      if (analyticsRes.status === "fulfilled" && analyticsRes.value.success) {
-        const data = analyticsRes.value.data;
-        totalDist = data.totalDistributed ?? 0;
-        primTotal = data.primaryRoyaltiesTotal ?? 0;
-        secTotal = data.secondaryRoyaltiesTotal ?? 0;
-
-        (data.collaboratorStats || []).forEach((c) => {
-          collabStatsMap.set(c.address, {
-            totalEarned: c.totalEarned,
-            payoutCount: c.payoutCount,
-          });
-        });
-      }
-
-      // Parse Secondary Stats if analytics secondary was 0
-      if (statsRes.status === "fulfilled" && statsRes.value) {
-        const stats = statsRes.value;
-        if (!secTotal && stats.totalRoyaltiesGenerated) {
-          secTotal = typeof stats.totalRoyaltiesGenerated === "number"
-            ? stats.totalRoyaltiesGenerated
-            : parseFloat(stats.totalRoyaltiesGenerated) || 0;
-        }
-      }
-
-      // Combine Collaborator shares with earnings stats
-      let collabList: CollaboratorEarning[] = [];
-      if (collabRes.status === "fulfilled" && Array.isArray(collabRes.value)) {
-        collabList = collabRes.value.map((c) => {
-          const stats = collabStatsMap.get(c.address) || { totalEarned: 0, payoutCount: 0 };
-          return {
-            address: c.address,
-            basisPoints: c.basisPoints,
-            totalEarned: stats.totalEarned,
-            payoutCount: stats.payoutCount,
-            avgPayout: stats.payoutCount > 0 ? stats.totalEarned / stats.payoutCount : 0,
-          };
-        });
-      } else if (collabStatsMap.size > 0) {
-        collabStatsMap.forEach((stats, addr) => {
-          collabList.push({
-            address: addr,
-            basisPoints: 0,
-            totalEarned: stats.totalEarned,
-            payoutCount: stats.payoutCount,
-            avgPayout: stats.payoutCount > 0 ? stats.totalEarned / stats.payoutCount : 0,
-          });
-        });
-      }
-
-      // Combine Recent Payout Activity
-      const payoutsList: RecentPayout[] = [];
-
-      if (historyRes.status === "fulfilled" && historyRes.value?.data) {
-        historyRes.value.data.forEach((tx: TransactionRecord) => {
-          payoutsList.push({
-            id: `tx-${tx.id}`,
-            type: tx.type === "secondary_distribute" || tx.type === "secondary_royalty" ? "secondary" : "primary",
-            timestamp: tx.timestamp,
-            txHash: tx.txHash,
-            amount: tx.requestedAmount ?? "—",
-            status: tx.status,
-            details: tx.type === "initialize" ? "Contract Initialization" : `${tx.type === "distribute" ? "Primary Royalty Distribution" : "Secondary Royalty Distribution"}`
-          });
-        });
-      }
-
-      if (salesRes.status === "fulfilled" && salesRes.value?.sales) {
-        salesRes.value.sales.forEach((sale: SecondarySale) => {
-          payoutsList.push({
-            id: `sale-${sale.id}`,
-            type: "secondary",
-            timestamp: sale.timestamp,
-            txHash: sale.transactionHash,
-            amount: sale.royaltyAmount,
-            status: "confirmed",
-            details: `NFT Resale (ID: ${sale.nftId})`,
-          });
-        });
-      }
-
-      // Sort payouts descending by timestamp
-      payoutsList.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-
-      setTotalDistributed(totalDist);
-      setPrimaryTotal(primTotal);
-      setSecondaryTotal(secTotal);
-      setCollaborators(collabList);
-      setRecentPayouts(payoutsList);
-    } catch (err: unknown) {
-      console.error("Error loading earnings dashboard:", err);
-      setError("Failed to load earnings dashboard data. Please try again.");
-    } finally {
-      setLoading(false);
-    }
-  }, [activeContract]);
-
-  useEffect(() => {
-    void loadDashboardData();
-  }, [loadDashboardData]);
+  // Refresh all queries for this contract
+  const handleRefresh = () => {
+    void queryClient.invalidateQueries({ queryKey: ["analytics", activeContract] });
+    void queryClient.invalidateQueries({ queryKey: ["collaborators", activeContract] });
+    void queryClient.invalidateQueries({ queryKey: ["royaltyStats", activeContract] });
+    void queryClient.invalidateQueries({ queryKey: ["txHistory", activeContract] });
+    void queryClient.invalidateQueries({ queryKey: ["secondarySales", activeContract] });
+  };
 
   // Handle distribution events for real-time earnings updates
-  const handleDistributionEvent = useCallback((event: DistributionEvent) => {
-    if (event.contractId === activeContract) {
-      // Reload dashboard data to get updated totals
-      void loadDashboardData();
-    }
-  }, [activeContract, loadDashboardData]);
+  const handleDistributionEvent = React.useCallback(
+    (event: DistributionEvent) => {
+      if (event.contractId === activeContract) {
+        handleRefresh();
+        const amount = distributionAmount(event);
+        if (amount !== null) {
+          setLatestDistribution({
+            amount,
+            type: event.type,
+            transactionId: event.transactionId,
+            timestamp: event.timestamp,
+          });
+        }
+      }
+    },
+    [activeContract],
+  );
 
   // Connect to WebSocket for real-time distribution updates
   const { connected: wsConnected } = useWebSocket({
@@ -242,6 +168,98 @@ export const EarningsDashboard: React.FC<EarningsDashboardProps> = ({
     onDistributionEvent: handleDistributionEvent,
     enabled: !!walletAddress && !!activeContract,
   });
+
+  // ── Derive display data from query results ────────────────────────────────
+
+  let totalDistributed = 0;
+  let primaryTotal = 0;
+  let secondaryTotal = 0;
+  let collabStatsMap = new Map<string, { totalEarned: number; payoutCount: number }>();
+
+  if (analyticsQuery.data?.success) {
+    const data = analyticsQuery.data.data;
+    totalDistributed = data.totalDistributed ?? 0;
+    primaryTotal = data.primaryRoyaltiesTotal ?? 0;
+    secondaryTotal = data.secondaryRoyaltiesTotal ?? 0;
+    (data.collaboratorStats || []).forEach((c) => {
+      collabStatsMap.set(c.address, {
+        totalEarned: c.totalEarned,
+        payoutCount: c.payoutCount,
+      });
+    });
+  }
+  // Fill secondary total from royalty stats if analytics didn't provide it
+  if (!secondaryTotal && royaltyStatsQuery.data?.totalRoyaltiesGenerated) {
+    const raw = royaltyStatsQuery.data.totalRoyaltiesGenerated;
+    secondaryTotal = typeof raw === "number" ? raw : parseFloat(raw) || 0;
+  }
+
+  const collaborators: CollaboratorEarning[] = useMemo(() => {
+    if (collaboratorsQuery.data && Array.isArray(collaboratorsQuery.data)) {
+      return collaboratorsQuery.data.map((c) => {
+        const stats = collabStatsMap.get(c.address) || { totalEarned: 0, payoutCount: 0 };
+        return {
+          address: c.address,
+          basisPoints: c.basisPoints,
+          totalEarned: stats.totalEarned,
+          payoutCount: stats.payoutCount,
+          avgPayout: stats.payoutCount > 0 ? stats.totalEarned / stats.payoutCount : 0,
+        };
+      });
+    }
+    if (collabStatsMap.size > 0) {
+      return Array.from(collabStatsMap.entries()).map(([addr, stats]) => ({
+        address: addr,
+        basisPoints: 0,
+        totalEarned: stats.totalEarned,
+        payoutCount: stats.payoutCount,
+        avgPayout: stats.payoutCount > 0 ? stats.totalEarned / stats.payoutCount : 0,
+      }));
+    }
+    return [];
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [collaboratorsQuery.data, analyticsQuery.data]);
+
+  const recentPayouts: RecentPayout[] = useMemo(() => {
+    const list: RecentPayout[] = [];
+    if (txHistoryQuery.data?.data) {
+      txHistoryQuery.data.data.forEach((tx: TransactionRecord) => {
+        list.push({
+          id: `tx-${tx.id}`,
+          type:
+            tx.type === "secondary_distribute" || tx.type === "secondary_royalty"
+              ? "secondary"
+              : "primary",
+          timestamp: tx.timestamp,
+          txHash: tx.txHash,
+          amount: tx.requestedAmount ?? "—",
+          status: tx.status,
+          details:
+            tx.type === "initialize"
+              ? "Contract Initialization"
+              : `${tx.type === "distribute" ? "Primary Royalty Distribution" : "Secondary Royalty Distribution"}`,
+        });
+      });
+    }
+    if (secondarySalesQuery.data?.sales) {
+      secondarySalesQuery.data.sales.forEach((sale: SecondarySale) => {
+        list.push({
+          id: `sale-${sale.id}`,
+          type: "secondary",
+          timestamp: sale.timestamp,
+          txHash: sale.transactionHash,
+          amount: sale.royaltyAmount,
+          status: "confirmed",
+          details: `NFT Resale (ID: ${sale.nftId})`,
+        });
+      });
+    }
+    return list.sort(
+      (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
+    );
+  }, [txHistoryQuery.data, secondarySalesQuery.data]);
+
+  // ── Selectors ────────────────────────────────────────────────────────────
 
   const contractSelector = selectableContracts.length > 0 && (
     <div className="contract-selector" data-testid="contract-selector">
@@ -320,7 +338,7 @@ export const EarningsDashboard: React.FC<EarningsDashboardProps> = ({
         <div className="error-alert" role="alert">
           <div className="error-title">Error Loading Dashboard</div>
           <p>{error}</p>
-          <button type="button" className="retry-btn" onClick={() => void loadDashboardData()}>
+          <button type="button" className="retry-btn" onClick={handleRefresh}>
             Retry
           </button>
         </div>
@@ -434,12 +452,25 @@ export const EarningsDashboard: React.FC<EarningsDashboardProps> = ({
         <button
           type="button"
           className="refresh-dashboard-btn"
-          onClick={() => void loadDashboardData()}
+          onClick={handleRefresh}
           title="Refresh dashboard data"
         >
           🔄 Refresh
         </button>
       </header>
+
+      {latestDistribution && (
+        <div className="live-distribution-banner" role="status" data-testid="latest-distribution">
+          <span className="live-distribution-pulse" aria-hidden="true">●</span>
+          <span>
+            Latest distribution added <strong>{formatCurrency(latestDistribution.amount, settings.displayCurrency)}</strong>
+            {latestDistribution.type === "secondary_sale_recorded" ? " from a secondary sale" : " to the dashboard"}.
+          </span>
+          <time dateTime={latestDistribution.timestamp}>
+            {new Date(latestDistribution.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+          </time>
+        </div>
+      )}
 
       {exportError && (
         <div className="export-error-banner" role="alert">
@@ -460,7 +491,7 @@ export const EarningsDashboard: React.FC<EarningsDashboardProps> = ({
             currency={settings.displayCurrency}
             testId="total-distributed"
           />
-          <div className="kpi-subtext">All-time primary & secondary payouts</div>
+          <div className="kpi-subtext">All-time primary &amp; secondary payouts</div>
         </div>
 
         <div className="kpi-card primary-royalties-card">
@@ -499,11 +530,14 @@ export const EarningsDashboard: React.FC<EarningsDashboardProps> = ({
         </div>
       </section>
 
+      {/* Advanced Analytics Section */}
+      <AdvancedAnalyticsDashboard payouts={recentPayouts} contractId={activeContract} />
+
       {/* Collaborators Breakdown Section */}
       <section className="dashboard-section collaborators-section" aria-labelledby="collab-earnings-heading">
         <div className="section-header">
           <div>
-            <h2 id="collab-earnings-heading">Collaborator Allocations & Earnings</h2>
+            <h2 id="collab-earnings-heading">Collaborator Allocations &amp; Earnings</h2>
             <p className="section-sub">Individual breakdown of shares and accumulated earnings.</p>
           </div>
           <div className="search-box">
@@ -586,6 +620,11 @@ export const EarningsDashboard: React.FC<EarningsDashboardProps> = ({
           </table>
         </div>
       </section>
+
+      <ContributorPerformanceComparison
+        collaborators={collaborators}
+        currency={settings.displayCurrency}
+      />
 
       {/* Recent Payout Activity Section */}
       <section className="dashboard-section recent-activity-section" aria-labelledby="payout-activity-heading">

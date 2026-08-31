@@ -25,10 +25,9 @@ describe("BulkContributorUpload", () => {
   test("shows error for non-CSV file", () => {
     render(<BulkContributorUpload contractId={CONTRACT_ID} />);
     const file = new File(["test"], "test.txt", { type: "text/plain" });
-    const input = screen.getByLabelText(/upload/i) as HTMLInputElement;
-    if (input) {
-      fireEvent.change(input, { target: { files: [file] } });
-    }
+    const input = screen.getByLabelText(/upload csv file/i) as HTMLInputElement;
+    fireEvent.change(input, { target: { files: [file] } });
+    expect(screen.getByText(/Please select a CSV file/i)).toBeDefined();
   });
 
   test("displays valid preview data", async () => {
@@ -49,6 +48,10 @@ describe("BulkContributorUpload", () => {
     mockApi.previewCsv.mockResolvedValue(previewData);
 
     render(<BulkContributorUpload contractId={CONTRACT_ID} />);
+    const input = screen.getByLabelText(/upload csv file/i) as HTMLInputElement;
+    fireEvent.change(input, {
+      target: { files: [new File(["address,share_percentage"], "test.csv", { type: "text/csv" })] },
+    });
 
     await waitFor(() => {
       expect(screen.getByText(/2 valid rows/)).toBeDefined();
@@ -77,6 +80,10 @@ describe("BulkContributorUpload", () => {
     mockApi.previewCsv.mockResolvedValue(previewData);
 
     render(<BulkContributorUpload contractId={CONTRACT_ID} />);
+    const input = screen.getByLabelText(/upload csv file/i) as HTMLInputElement;
+    fireEvent.change(input, {
+      target: { files: [new File(["address,share_percentage"], "test.csv", { type: "text/csv" })] },
+    });
 
     await waitFor(() => {
       expect(screen.getByText(/1 errors/)).toBeDefined();
@@ -110,6 +117,10 @@ describe("BulkContributorUpload", () => {
     mockApi.importCsv.mockResolvedValue(importResult);
 
     render(<BulkContributorUpload contractId={CONTRACT_ID} />);
+    const input = screen.getByLabelText(/upload csv file/i) as HTMLInputElement;
+    fireEvent.change(input, {
+      target: { files: [new File(["address,share_percentage"], "test.csv", { type: "text/csv" })] },
+    });
 
     await waitFor(() => {
       expect(screen.getByText(/1 valid rows/)).toBeDefined();

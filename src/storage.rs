@@ -21,6 +21,7 @@ pub fn extend_instance_ttl(env: &Env) {
 }
 
 /// Bump a single persistent storage key's TTL.
+#[allow(dead_code)]
 pub fn extend_persistent_ttl_for(env: &Env, key: &StorageKey) {
     env.storage()
         .persistent()
@@ -44,6 +45,7 @@ where
 }
 
 /// Returns whether instance storage contains `key`.
+#[allow(dead_code)]
 pub fn instance_has(env: &Env, key: &StorageKey) -> bool {
     env.storage().instance().has(key)
 }
@@ -57,6 +59,12 @@ where
     env.storage()
         .persistent()
         .extend_ttl(key, PERSISTENT_MIN_TTL, PERSISTENT_MAX_TTL);
+}
+
+/// Remove a value from persistent storage.
+#[allow(dead_code)]
+pub fn persistent_remove(env: &Env, key: &StorageKey) {
+    env.storage().persistent().remove(key);
 }
 
 /// Read a value from persistent storage and bump its TTL if present.

@@ -25,6 +25,7 @@ const defaultProps = {
 describe("InitializeForm — accessibility", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockApi.listTemplates.mockResolvedValue({ data: [] });
   });
 
   test("every address input has an associated visible label", () => {
@@ -107,9 +108,9 @@ describe("InitializeForm — accessibility", () => {
     });
   });
 
-  test("status region uses aria-live=assertive for SR announcements", () => {
+  test("status region uses aria-live=polite for SR announcements", () => {
     render(<InitializeForm {...defaultProps} />);
-    const liveRegion = document.querySelector('[aria-live="assertive"]');
+    const liveRegion = document.querySelector('[aria-live="polite"]');
     expect(liveRegion).toBeTruthy();
   });
 

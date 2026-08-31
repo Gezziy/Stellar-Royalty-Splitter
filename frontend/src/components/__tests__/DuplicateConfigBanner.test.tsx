@@ -123,7 +123,7 @@ describe("DuplicateConfigBanner", () => {
       <DuplicateConfigBanner draft={mockDraft} onClearDuplicate={onClear} />,
     );
 
-    expect(screen.getByText(/CORIG\.\.\./)).toBeInTheDocument();
+    expect(screen.getByText(/CORIGIN\.\.\./)).toBeInTheDocument();
   });
 
   it("should show time ago correctly", () => {
